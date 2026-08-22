@@ -86,6 +86,8 @@ func dispatch(stdin *bufio.Reader, args []string) error {
 		return cmdLogs()
 	case "config":
 		return cmdConfig(args[1:])
+	case "update":
+		return cmdUpdate()
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -146,9 +148,10 @@ Commands:
   start                     Run in the foreground (instead of the service).
   stats                     Traffic totals, quota, load, and run status.
   config node|xray          Show the app-config / generated xray JSON.
-  service install|uninstall|start|stop|status
+  service install|uninstall|start|stop|restart|status
                             Manage the background service.
   logs                      Show the daemon log.
+  update					Check updates and apply if available.
   version · help · exit
 `)
 }
@@ -672,6 +675,11 @@ func cmdStart() error {
 	return runNode(ctx)
 }
 
+func cmdUpdate() error {
+	checkSelfUpdate(context.Background())
+	return nil
+}
+
 // runNode is the core loop, run by the OS service and by `start`. It starts
 // xray with the configured clients, the per-user throttle proxy, accounts
 // traffic against the monthly quota, writes stats, and self-updates. No server.
@@ -728,9 +736,7 @@ func runNode(ctx context.Context) error {
 	lastActive := map[string]time.Time{}
 
 	tick := time.NewTicker(30 * time.Second)
-	updateTick := time.NewTicker(6 * time.Hour)
 	defer tick.Stop()
-	defer updateTick.Stop()
 	checkSelfUpdate(ctx)
 
 	for {
@@ -787,8 +793,6 @@ func runNode(ctx context.Context) error {
 					}
 				}
 			}
-		case <-updateTick.C:
-			checkSelfUpdate(ctx)
 		}
 	}
 }
@@ -812,7 +816,9 @@ func checkSelfUpdate(ctx context.Context) {
 		return
 	}
 	if applied {
-		log.Printf("self-update: installed %s — takes effect on next restart", ver)
+		log.Printf("installed %s — takes effect on next daemon restart", ver)
+	} else {
+		log.Printf("no updates")
 	}
 }
 
@@ -882,6 +888,8 @@ func cmdService(args []string) error {
 		return svc.Start()
 	case "stop":
 		return svc.Stop()
+	case "restart":
+		return svc.Restart()
 	case "status":
 		s, sErr := svc.Status()
 		if sErr != nil {
