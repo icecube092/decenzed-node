@@ -81,9 +81,6 @@ xray JSON by hand.
 ## Notes
 - **Per-user speed cap** is enforced by a small throttle proxy in front of xray
   (keyed by client source IP) — application-level, no OS/tc config.
-- **Auto-update** (optional): if `internal/config/update_manifest.txt` points at
-  a GitHub Release manifest, the service checks it at start and every 6h and
-  self-updates (checksum-verified); it takes effect on the next restart.
 - Data lives next to the binary in `decenzed-data/` so the CLI and the service
   (which may run as a different user) share the same files.
 - Uninstall the service: `decenzed-node service uninstall`.
