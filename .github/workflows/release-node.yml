@@ -70,6 +70,8 @@ jobs:
           cat manifest.json
 
       - name: Publish release in ${{ env.DIST_REPO }}
+        env:
+          GH_TOKEN: ${{ secrets.DECENZED_NODE_GIT_TOKEN }}
         run: |
           set -euo pipefail
           gh release create "$TAG" \

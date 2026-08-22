@@ -87,3 +87,8 @@ xray JSON by hand.
 - Data lives next to the binary in `decenzed-data/` so the CLI and the service
   (which may run as a different user) share the same files.
 - Uninstall the service: `decenzed-node service uninstall`.
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See the LICENSE file for the full license text.

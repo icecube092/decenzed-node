@@ -37,7 +37,6 @@ import (
 	"decenzed/node_app/internal/speedtest"
 	"decenzed/node_app/internal/throttle"
 	"decenzed/node_app/internal/traffic"
-	"decenzed/node_app/internal/winconsole"
 	"decenzed/node_app/internal/xraygen"
 	"decenzed/node_app/internal/xrayrt"
 )
@@ -64,7 +63,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		code = 1
 	}
-	winconsole.PauseIfDoubleClicked()
 	os.Exit(code)
 }
 
