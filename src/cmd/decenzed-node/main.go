@@ -100,11 +100,6 @@ func dispatch(stdin *bufio.Reader, args []string) error {
 // repl is the interactive shell: prints stats, then help, then reads commands.
 func repl(stdin *bufio.Reader) int {
 	fmt.Println("decenzed-node — self-hosted VLESS + REALITY proxy")
-	fmt.Println(strings.Repeat("─", 60))
-	if err := cmdStats(); err != nil {
-		fmt.Println("(no stats yet —", err.Error()+")")
-	}
-	fmt.Println(strings.Repeat("─", 60))
 	usage()
 	for {
 		fmt.Print("\ndecenzed> ")
