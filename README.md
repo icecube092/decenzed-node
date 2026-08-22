@@ -1,145 +1,89 @@
-# Running a decenzed node on your computer
+# decenzed-node — run your own proxy, share links with friends
 
-`decenzed-node` turns your machine into a **proxy node**: it runs an embedded
-xray-core server, applies your policy (bandwidth / blocked protocols / domains /
-monthly traffic cap) and talks to the coordination server. Works on **Windows,
-macOS, Linux**.
+`decenzed-node` is a **standalone** VLESS + REALITY proxy server you run on your
+own machine (Windows, macOS, Linux). It scans for a camouflage domain, generates
+its own REALITY keys, runs an embedded xray-core, and prints **share links** you
+hand to friends. There is **no coordination server** — it's fully self-contained
+and open source.
 
 ## 1. Requirements
-- A **public IP** on your router — static, or dynamic (the DNS is updated for
-  you). If your node is a LAN device, forward its port on the router.
-  **CGNAT is not supported** (mobile / some ISPs put you behind carrier NAT —
-  then inbound connections can't reach you).
-- Open/forward the node port (default **443**; you can set another in setup).
-- Admin/root rights only for **autostart** (installing the OS service).
-
-> `decenzed-node check` tells you whether your machine qualifies.
-
-## How to run it
-- **Interactive shell** — double-click the `.exe` (Windows) or run it with **no
-  arguments**. A prompt opens (`decenzed>`) where you type the commands below;
-  the window stays open until you type `exit`. This is the easiest way to
-  onboard the node.
-- **One command** — from a terminal: `decenzed-node <command>` (e.g.
-  `decenzed-node setup`). Good for scripts.
-- **Daemon** — once enabled (`install` / on boot) the node runs in the
-  background automatically and polls root every minute; the shell/CLI is only
-  for configuring it.
-
-### The onboarding flow (run in order)
-The four steps are **gated** — each refuses to run until the previous one
-completed, and the node remembers how far you got:
-
-```
-check  →  setup  →  register  →  install
-```
-
-The commands below work the same in the shell or as one-shot arguments.
+- A **public IP** (static or dynamic). If the machine is on a home LAN, forward
+  its port on the router. **CGNAT is not supported** (some ISPs / mobile put you
+  behind carrier NAT — inbound connections can't reach you).
+- Open/forward one TCP port (default **443**; you can pick **8443**).
+- Admin/root rights only to install the background **service**.
 
 ## 2. Get the binary
-**Download** the prebuilt binary for your OS (from the project's distribution)
+Download the prebuilt binary for your OS, or build from source (Go 1.26+):
+```bash
+cd src
+go build -o decenzed-node ./cmd/decenzed-node   # Windows: decenzed-node.exe
+```
+Put it in a folder you can write to — it keeps its data in a `decenzed-data/`
+folder next to the executable (config, xray.json, stats, logs).
 
+## 3. How to run it
+- **Interactive shell** — double-click the `.exe` (Windows) or run with no
+  arguments. A prompt opens where you type commands; it stays open until `exit`.
+- **One command** — `decenzed-node <command>`.
+- **Service** — once installed, it runs in the background on boot.
 
-## 3. Check your machine (step 1)
+## 4. Check your machine
 ```bash
 decenzed-node check
 ```
-Shows your public IP and whether inbound connections reach you. Fix port
-forwarding / firewall until it says the host is suitable — only then does it
-record the pass and let `setup` run.
+Shows your public IP, runs a speed test, and prints step-by-step **port-forward**
+instructions for your router. Fix forwarding/firewall until friends can reach the
+port. (A serving machine mostly uploads, so ≥10 Mbit/s upload is recommended.)
 
-## 4. First-run setup (step 2, interactive)
+## 5. Setup
 ```bash
 decenzed-node setup
 ```
-A wizard asks (press Enter for the default, hints shown):
-- **Node port** — the inbound TCP port to forward on your router.
-- **Monthly traffic limit** — how much of your connection to donate (default:
-  unlimited). e.g. `500GB`, `2TB`.
-- **Reset day** of the month (default 1) — match your ISP's billing day.
-- **Blocked protocols** (default `bittorrent`) — reduces abuse/liability.
-- **Bandwidth cap** — total node speed (default: unlimited).
-- **Location** — auto-detected; you can correct it.
-- **Payout wallet** — where earnings are paid.
-- **Autostart on boot** (default yes).
+A wizard asks (Enter for the default):
+- **Port** (443 / 8443 / custom).
+- **Monthly traffic limit** (default: unlimited) + **reset day**.
+- **Blocked protocols** (default `bittorrent`).
+- **Per-user speed cap** (default 10 Mbit/s).
+- **Public IP** (blank = auto-detect for links).
 
-Then setup automatically:
-- **Scans for a REALITY camouflage domain** — it probes the IP neighbourhood of
-  your server (the /24 around your public IP) for real sites that speak TLS 1.3 +
-  HTTP/2, so the borrowed site is network-close and plausible; if none turn up it
-  falls back to a curated seed list. Domains are **unique per node** (checked
-  against root), and the chosen one is pinged to confirm it's alive.
-- **Generates your REALITY keypair** locally (the private key never leaves your
-  machine) and **builds the xray-core config** (`xray.json`) — there is no
-  separate "generate" step.
+Then it automatically **scans for a REALITY camouflage domain** (a live TLS 1.3 +
+HTTP/2 site near you), **generates your REALITY keypair**, creates your first
+client, and writes the xray config. It prints your first share link at the end.
 
-Config is saved **next to the binary**, in a `decenzed-data/` folder beside the
-`decenzed-node` executable (config.json, xray.json, stats.json, reports/). This
-is so the background service — which may run as a different OS user — reads the
-exact same files as your CLI. Put the binary in a folder you can write to.
-
-## 5. Register with the network (step 3)
+## 6. Run it in the background
 ```bash
-decenzed-node register
+decenzed-node service install     # enable autostart + start now (needs admin/root)
+decenzed-node service status
 ```
-Registration **asks only for your email** — everything else (location, bandwidth,
-payout wallet, REALITY public key + domain) comes from the config `setup` built.
-Sends your node for approval. Operators are **added manually by an admin**, so
-your node starts serving traffic only after it's approved.
+Or run in the foreground for a quick test: `decenzed-node start`.
 
-**Registration is one-time.** It's keyed to a stable per-machine device id, so
-`register` only works once; running it again just prints your node's status and
-the data you entered (contact, wallet, location). To change any of that
-afterwards, **contact support** — it can't be re-registered from the CLI.
-
-## 6. Install & run (step 4)
+## 7. Share with friends — the `link` command
 ```bash
-decenzed-node install     # enable autostart + start now (needs admin/root once)
+decenzed-node link                 # print share links for all clients
+decenzed-node link add alice       # create a client for a friend, print their link
+decenzed-node link remove alice    # revoke a friend
 ```
-This installs the background service and starts it. From then on the node runs
-on boot and **polls root every minute** for its status and the set of clients it
-may serve — it begins carrying traffic automatically once an admin approves it.
-Uptime feeds your reputation and payouts.
+Each client is a separate `vless://…` link (paste into nekobox, v2rayN/NG,
+Hiddify, sing-box, …). Removing a client revokes just that friend. Adding/removing
+reloads the service automatically.
 
-To run in the foreground instead (e.g. for a quick test):
+## 8. Monitor & tune
 ```bash
-decenzed-node start
+decenzed-node stats                # traffic totals, quota, load, run status
+decenzed-node logs                 # daemon log
+decenzed-node config node|xray     # inspect app-config / generated xray JSON
 ```
-
-## 7. Monitor & tune
-```bash
-decenzed-node stats               # traffic totals, monthly quota, root status
-decenzed-node service status      # is the daemon running?
-decenzed-node config show         # inspect the current app-config
-```
-`stats` reads a snapshot the running daemon writes every ~30s (lifetime up/down,
-this period's usage vs your monthly limit, current root status / clients /
-reputation). If the daemon isn't running it shows the last snapshot marked
-**stale**.
-**To change any setting (port, bandwidth, quota, protocols, location, or the
-REALITY domain): re-run `decenzed-node setup`** — it re-asks every field with the
-current value as the default (keeping your domain if it's still valid) and
-**rebuilds `xray.json`** for you. You never edit xray JSON by hand; there is no
-`config generate`. Restart the service to apply.
-
-The **root server address is baked into the binary** at build time
-(`internal/config/root_endpoint.txt`) — setup does not ask for it.
+**To change any setting, re-run `decenzed-node setup`** — it re-asks every field
+with the current value as the default and rebuilds `xray.json`. You never edit
+xray JSON by hand.
 
 ## Notes
-- **Per-user speed cap (10 Mbit/s):** the node runs a small throttle proxy on
-  your public port that forwards to xray on a loopback port, capping each client
-  (keyed by source IP) to 10 Mbit/s per direction. This is application-level (no
-  router/OS config). xray-core has no native per-user limit, and neither does
-  3x-ui (quota only) — this proxy adds it. Fair-share is also enforced by root
-  assigning at most `bandwidth ÷ 5 Mbit/s` clients per node.
-- **Auto-update:** the daemon checks a baked-in release manifest at start and
-  every 6h; a newer, checksum-verified binary is installed and takes effect on
-  the next restart.
-- **Domain lists:** the node applies root's signed base allow-list, fetched at
-  start and refreshed hourly (not per heartbeat), and hot-reloads xray.
-- The node reports its public IP implicitly (root reads it from your signed
-  heartbeat), so you don't configure DNS or your IP manually.
-- Reaching a full serving state needs the coordination server + admin approval.
-  `check` and `setup` (including the domain scan) work standalone for verifying
-  your machine before that.
+- **Per-user speed cap** is enforced by a small throttle proxy in front of xray
+  (keyed by client source IP) — application-level, no OS/tc config.
+- **Auto-update** (optional): if `internal/config/update_manifest.txt` points at
+  a GitHub Release manifest, the service checks it at start and every 6h and
+  self-updates (checksum-verified); it takes effect on the next restart.
+- Data lives next to the binary in `decenzed-data/` so the CLI and the service
+  (which may run as a different user) share the same files.
 - Uninstall the service: `decenzed-node service uninstall`.
