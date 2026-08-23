@@ -89,3 +89,9 @@ xray JSON by hand.
 
 This project is licensed under the GNU Affero General Public License v3.0.
 See the LICENSE file for the full license text.
+
+## Support
+
+<a href="https://ko-fi.com/icecube092" target="_blank">
+  <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Buy Me a Coffee at ko-fi.com" height="36">
+</a>
