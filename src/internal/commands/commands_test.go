@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,49 @@ func TestLinkFor(t *testing.T) {
 		if !strings.Contains(link, want) {
 			t.Errorf("link %q missing %q", link, want)
 		}
+	}
+}
+
+func TestSingboxOutbound(t *testing.T) {
+	c := config.AppConfig{
+		Port:              8443,
+		RealityServerName: []string{"www.qualcomm.com"},
+		RealityPublicKey:  "PUBKEY",
+		RealityShortIDs:   []string{"beef"},
+	}
+	out := singboxOutbound(c, config.Client{UUID: "uuid-1", Name: "alice"}, "host.example")
+
+	// It must be valid JSON that round-trips to the expected values.
+	var ob struct {
+		Type, Tag, Server, UUID, Flow, Network string
+		ServerPort                             int `json:"server_port"`
+		TLS                                    struct {
+			Enabled    bool
+			ServerName string `json:"server_name"`
+			Reality    struct {
+				Enabled   bool
+				PublicKey string `json:"public_key"`
+				ShortID   string `json:"short_id"`
+			}
+			UTLS struct {
+				Enabled     bool
+				Fingerprint string
+			} `json:"utls"`
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &ob); err != nil {
+		t.Fatalf("outbound is not valid JSON: %v\n%s", err, out)
+	}
+	if ob.Type != "vless" || ob.Tag != "alice" || ob.Server != "host.example" ||
+		ob.ServerPort != 8443 || ob.UUID != "uuid-1" || ob.Flow != "xtls-rprx-vision" ||
+		ob.Network != "tcp" {
+		t.Errorf("unexpected outbound: %+v", ob)
+	}
+	if !ob.TLS.Enabled || ob.TLS.ServerName != "www.qualcomm.com" ||
+		!ob.TLS.Reality.Enabled || ob.TLS.Reality.PublicKey != "PUBKEY" ||
+		ob.TLS.Reality.ShortID != "beef" || !ob.TLS.UTLS.Enabled ||
+		ob.TLS.UTLS.Fingerprint != "chrome" {
+		t.Errorf("unexpected tls block: %+v", ob.TLS)
 	}
 }
 
