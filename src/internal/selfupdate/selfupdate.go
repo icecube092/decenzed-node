@@ -36,8 +36,25 @@ type Manifest struct {
 	Assets  map[string]Asset `json:"assets"`
 }
 
+// VariantKey, when set at build time via
+//
+//	-ldflags "-X decenzed/node_app/internal/selfupdate.VariantKey=linux_armv7"
+//
+// overrides the default runtime GOOS_GOARCH manifest key. This is needed because
+// runtime.GOARCH cannot tell ARM/MIPS float variants apart (all arm builds report
+// "arm", all mips builds "mips"), yet each needs a distinct release asset. The CI
+// bakes the exact variant (e.g. linux_armv7, linux_mipsle_softfloat) so the
+// updater downloads the same binary flavour that is already installed. Empty =
+// fall back to the plain runtime key (correct for amd64/arm64/desktop builds).
+var VariantKey string
+
 // platformKey is this build's manifest key.
-func platformKey() string { return runtime.GOOS + "_" + runtime.GOARCH }
+func platformKey() string {
+	if k := strings.TrimSpace(VariantKey); k != "" {
+		return k
+	}
+	return runtime.GOOS + "_" + runtime.GOARCH
+}
 
 // CheckAndApply fetches the manifest and, if it advertises a newer version with
 // an asset for this platform, downloads + verifies + replaces this binary. The

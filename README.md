@@ -14,6 +14,10 @@ and open source.
 - A **public IP** (static or dynamic). If the machine is on a home LAN, forward
   its port on the router. **CGNAT is not supported** (some ISPs / mobile put you
   behind carrier NAT — inbound connections can't reach you).
+- If the node runs on a **desktop/laptop behind a home router**, give that
+  machine a **fixed LAN IP via a DHCP reservation** (bind its MAC to one address
+  in your router's DHCP settings). Otherwise its LAN IP can change on reboot/lease
+  renewal and your port-forward will silently point at the wrong device.
 - Open/forward one TCP port (default **443**; you can pick **8443**).
 - Admin/root rights only to install the background **service**.
 
@@ -25,6 +29,91 @@ go build -o decenzed-node ./cmd/decenzed-node   # Windows: decenzed-node.exe
 ```
 Put it in a folder you can write to — it keeps its data in a `decenzed-data/`
 folder next to the executable (config, xray.json, stats, logs).
+
+### On an OpenWRT router (auto-detects CPU architecture)
+
+You can run the node **on the router itself**. One line installs the correct
+binary for your router's CPU (`arm64`, `armv7`, `mipsel`, …) from the latest
+release, verifies its SHA-256, and puts `decenzed-node` on your PATH:
+
+```sh
+wget -O - https://github.com/icecube092/decenzed-node/releases/latest/download/install-openwrt.sh | sh
+```
+
+Then, on the router:
+
+```sh
+decenzed-node setup            # pick port 8443 (443 is taken by LuCI), scan a REALITY domain, make keys
+decenzed-node service install  # autostart on boot (native procd service)
+decenzed-node check            # public IP, speed test, and port-forward guidance
+decenzed-node link             # the vless:// link to paste into your client
+```
+
+Notes for routers:
+- The binary is **~32 MB**. Devices with only 8–16 MB of flash need USB storage +
+  [extroot](https://openwrt.org/docs/guide-user/additional-software/extroot_configuration):
+  re-run the installer with `DIR=/mnt/usb`, and/or set
+  `DECENZED_DATA=/mnt/usb/decenzed-data` so config/logs live off the flash.
+- On OpenWRT the background service is managed by **procd** (`/etc/init.d/decenzed-node`),
+  so `service install|status|start|stop|restart` work natively, and `update`
+  self-replaces the binary and restarts the service.
+- Manual control: `/etc/init.d/decenzed-node {start|stop|restart|status}`; logs via `logread -e decenzed`.
+
+**How it works on a router — where the port points.** The node is a TCP server:
+it *listens* on your chosen port (e.g. 8443) on the router, and clients connect
+**inbound** to it. What you do to expose that port depends on where the node sits:
+
+- **Node on your main/edge router** (the box that holds the public IP — e.g. a
+  Routerich AX3000 as your primary router). The listening port is already on the
+  WAN edge; there is nothing to "forward". OpenWRT blocks WAN input by default, so
+  the port just has to be **allowed through the firewall** — and the installer
+  does this for you: it adds an idempotent `Allow-decenzed-node` rule accepting
+  inbound TCP `8443` from WAN. Chose a non-default port? Re-run the installer with
+  `PORT=<port>` (or edit that rule in LuCI → Network → Firewall → Traffic Rules).
+  To skip the automatic rule entirely, install with `NO_FIREWALL=1`.
+- **Node on a router *behind* another router/ISP box.** Forward TCP 8443 on the
+  upstream box to this router's LAN IP (Port Forwarding / Virtual Server), exactly
+  as `decenzed-node check` prints.
+
+Either way you need a real **public IP**. Behind **CGNAT** (your ISP shares one
+IP across many customers) inbound connections can't reach you — ask your ISP for
+a public/"white" IP, or front the node with a cheap VPS. `decenzed-node check`
+detects CGNAT/private IPs and warns you.
+
+### Supported architectures
+
+Every release ships prebuilt static binaries (pure Go, `CGO_ENABLED=0`, no libc
+dependency — they run on glibc and musl/OpenWRT alike). `install-openwrt.sh`
+auto-detects the router's CPU (`uname -m` + ELF endianness) and downloads the
+matching one.
+
+**Desktop**
+
+| OS | Asset |
+| --- | --- |
+| Windows x86-64 | `decenzed-node-windows-amd64.exe` |
+| macOS (Intel) | `decenzed-node-darwin-amd64` |
+| macOS (Apple Silicon) | `decenzed-node-darwin-arm64` |
+| Linux x86-64 | `decenzed-node-linux-amd64` |
+
+**Routers / OpenWRT**
+
+| Asset | Go arch | Typical OpenWRT targets & CPUs |
+| --- | --- | --- |
+| `decenzed-node-linux-arm64` | arm64 (aarch64) | **Filogic MT798x — Routerich AX3000**, mvebu, ipq807x, bcm27xx |
+| `decenzed-node-linux-armv7` | arm, GOARM=7 | ipq40xx, mvebu (32-bit), sunxi, bcm53xx |
+| `decenzed-node-linux-armv6` | arm, GOARM=6 | bcm2708 / older ARMv6 |
+| `decenzed-node-linux-armv5` | arm, GOARM=5 | kirkwood / older ARMv5 |
+| `decenzed-node-linux-mipsle-softfloat` | mipsle, softfloat | ramips (mt7620/mt76x8), rt305x — most budget routers |
+| `decenzed-node-linux-mips-softfloat` | mips, softfloat | ath79, lantiq (big-endian MIPS) |
+| `decenzed-node-linux-mips64le` | mips64le | octeon / newer 64-bit MIPS (LE) |
+| `decenzed-node-linux-mips64` | mips64 | 64-bit MIPS (BE) |
+| `decenzed-node-linux-amd64` | amd64 | x86_64 routers & VMs |
+| `decenzed-node-linux-386` | 386 | legacy x86 |
+
+MIPS builds use `GOMIPS=softfloat` because router SoCs have no FPU. If your device
+isn't covered, open an issue with the output of `uname -m` and
+`. /etc/openwrt_release; echo "$DISTRIB_TARGET"`.
 
 ## 3. How to run it
 - **Interactive shell** — double-click the `.exe` (Windows) or run with no

@@ -40,7 +40,9 @@ func cmdStats() error {
 
 func runStatus(st nodestats.Snapshot) string {
 	svcState := "unknown"
-	if svc, err := newService(); err == nil {
+	if procdAvailable() {
+		svcState = procdStatusString()
+	} else if svc, err := newService(); err == nil {
 		if s, sErr := svc.Status(); sErr == nil {
 			svcState = statusString(s)
 		}

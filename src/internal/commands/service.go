@@ -47,12 +47,16 @@ func runAsService() error {
 }
 
 func cmdService(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: service install|uninstall|start|stop|status")
+	}
+	// OpenWRT/procd systems are managed by a native init script, not kardianos.
+	if procdAvailable() {
+		return cmdServiceProcd(args)
+	}
 	svc, err := newService()
 	if err != nil {
 		return err
-	}
-	if len(args) == 0 {
-		return fmt.Errorf("usage: service install|uninstall|start|stop|status")
 	}
 	switch args[0] {
 	case "install":
@@ -117,15 +121,21 @@ func cmdUpdate() error {
 		return nil
 	}
 	fmt.Printf("installed %s — restarting the service...\n", ver)
-	if svc, sErr := newService(); sErr == nil {
-		if rErr := svc.Restart(); rErr != nil {
-			fmt.Println("  ! could not restart the service automatically:", rErr)
-			fmt.Println("    restart it yourself with: decenzed-node service restart")
-			return nil
+	restart := func() error {
+		if procdAvailable() {
+			return procdCtl("restart")
 		}
-		fmt.Println("service restarted — now running", ver)
-	} else {
-		fmt.Println("  ! the new binary is in place; restart the node to apply it.")
+		svc, sErr := newService()
+		if sErr != nil {
+			return sErr
+		}
+		return svc.Restart()
 	}
+	if rErr := restart(); rErr != nil {
+		fmt.Println("  ! could not restart the service automatically:", rErr)
+		fmt.Println("    restart it yourself with: decenzed-node service restart")
+		return nil
+	}
+	fmt.Println("service restarted — now running", ver)
 	return nil
 }

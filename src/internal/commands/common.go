@@ -20,9 +20,15 @@ import (
 
 // --- data dir / config paths ---
 
-// dataDir returns the data directory next to the executable so the OS service
-// (which may run as a different user) and your CLI share the same files.
+// dataDir returns the data directory. By default it sits next to the executable
+// so the OS service (which may run as a different user) and your CLI share the
+// same files. On flash-constrained systems (e.g. an OpenWRT router) set
+// DECENZED_DATA to relocate the data onto writable storage (USB/extroot); the
+// generated service inherits the same value so CLI and daemon stay in sync.
 func dataDir() (string, error) {
+	if d := strings.TrimSpace(os.Getenv("DECENZED_DATA")); d != "" {
+		return d, nil
+	}
 	exe, err := os.Executable()
 	if err == nil {
 		if resolved, e := filepath.EvalSymlinks(exe); e == nil {
@@ -46,7 +52,16 @@ func configPath() (string, error) {
 }
 
 func xrayConfigPath(cfgPath string) string { return filepath.Join(filepath.Dir(cfgPath), "xray.json") }
-func logFilePath(cfgPath string) string    { return filepath.Join(filepath.Dir(cfgPath), "node.log") }
+
+// logFilePath is where the daemon log is written. On OpenWRT (procd) it lives in
+// /tmp (tmpfs/RAM) so rotating logs never wear out or fill the router's flash;
+// everywhere else it sits next to the config in decenzed-data.
+func logFilePath(cfgPath string) string {
+	if procdAvailable() {
+		return "/tmp/decenzed-node.log"
+	}
+	return filepath.Join(filepath.Dir(cfgPath), "node.log")
+}
 
 func loadConfig() (config.AppConfig, error) {
 	path, err := configPath()

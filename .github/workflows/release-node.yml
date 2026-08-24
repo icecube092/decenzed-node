@@ -1,10 +1,12 @@
 name: Release decenzed-node
 
 # Triggered by pushing a version tag (e.g. `git tag v1.2.0 && git push origin v1.2.0`).
-# Builds the node binaries for every platform, generates a checksum manifest, and
-# publishes a Release in the PUBLIC distribution repo (icecube092/decenzed-node)
-# using the DECENZED_NODE_GIT_TOKEN secret. Nodes auto-update from that repo's
-# releases (update_manifest.txt points at its /releases/latest/download/manifest.json).
+# Builds the node binaries for every platform (desktop + OpenWRT router CPUs),
+# generates a checksum manifest, and publishes a Release in the PUBLIC
+# distribution repo (icecube092/decenzed-node) using DECENZED_NODE_GIT_TOKEN.
+# Nodes auto-update from that repo's releases (update_manifest.txt points at its
+# /releases/latest/download/manifest.json). The OpenWRT one-line installer
+# (install-openwrt.sh) is attached to the release too.
 on:
   push:
     tags:
@@ -12,6 +14,27 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # Build matrix, one target per line: name|GOOS|GOARCH|EXTRA_ENV|MANIFEST_KEY
+  # MANIFEST_KEY must equal selfupdate.platformKey() for that build: for amd64/
+  # arm64/desktop it is GOOS_GOARCH; for ARM/MIPS float variants it is the exact
+  # flavour (baked into the binary via -X selfupdate.VariantKey) so the updater
+  # and install-openwrt.sh both resolve the same asset.
+  TARGETS: |
+    linux-amd64|linux|amd64||linux_amd64
+    linux-386|linux|386||linux_386
+    linux-arm64|linux|arm64||linux_arm64
+    linux-armv7|linux|arm|GOARM=7|linux_armv7
+    linux-armv6|linux|arm|GOARM=6|linux_armv6
+    linux-armv5|linux|arm|GOARM=5|linux_armv5
+    linux-mips-softfloat|linux|mips|GOMIPS=softfloat|linux_mips_softfloat
+    linux-mipsle-softfloat|linux|mipsle|GOMIPS=softfloat|linux_mipsle_softfloat
+    linux-mips64le|linux|mips64le||linux_mips64le
+    linux-mips64|linux|mips64||linux_mips64
+    darwin-amd64|darwin|amd64||darwin_amd64
+    darwin-arm64|darwin|arm64||darwin_arm64
+    windows-amd64|windows|amd64||windows_amd64
 
 jobs:
   release:
@@ -27,24 +50,25 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
-      - name: Build binaries (all platforms)
+      - name: Build binaries (desktop + OpenWRT router CPUs)
         working-directory: src
         run: |
           set -euo pipefail
           mkdir -p ../dist
-          platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64"
-          for p in $platforms; do
-            os="${p%/*}"; arch="${p#*/}"
-            out="decenzed-node-${os}-${arch}"
-            [ "$os" = "windows" ] && out="${out}.exe"
-            echo "==> $out ($TAG)"
-            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
-              go build -trimpath -ldflags "-s -w -X main.version=${TAG}" \
-              -o "../dist/${out}" ./cmd/decenzed-node
-          done
+          printf '%s\n' "$TARGETS" | while IFS='|' read -r name goos goarch extra key; do
+            [ -z "$name" ] && continue
+            out="decenzed-node-${name}"
+            [ "$goos" = "windows" ] && out="${out}.exe"
+            echo "==> $out  (key=$key)"
+            env ${extra:+$extra} GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath \
+              -ldflags "-s -w -X main.version=${TAG} -X decenzed/node_app/internal/selfupdate.VariantKey=${key}" \
+              -o "../dist/${out}" ./cmd/decenzed-node || exit 1
+          done || exit 1
+          echo "----- built -----"
+          ls -la ../dist
 
       - name: Generate manifest.json
-        working-directory: dist
         run: |
           set -euo pipefail
           {
@@ -52,12 +76,12 @@ jobs:
             echo "  \"version\": \"${TAG#v}\","
             echo '  "assets": {'
             first=1
-            for f in decenzed-node-*; do
-              case "$f" in *.exe) key="${f%.exe}";; *) key="$f";; esac
-              key="${key#decenzed-node-}"   # os-arch
-              key="${key/-/_}"              # os_arch (manifest key = GOOS_GOARCH)
-              sha="$(sha256sum "$f" | cut -d' ' -f1)"
-              url="https://github.com/${DIST_REPO}/releases/download/${TAG}/${f}"
+            printf '%s\n' "$TARGETS" | while IFS='|' read -r name goos goarch extra key; do
+              [ -z "$name" ] && continue
+              out="decenzed-node-${name}"
+              [ "$goos" = "windows" ] && out="${out}.exe"
+              sha="$(sha256sum "dist/${out}" | cut -d' ' -f1)"
+              url="https://github.com/${DIST_REPO}/releases/download/${TAG}/${out}"
               [ "$first" -eq 0 ] && echo ','
               first=0
               printf '    "%s": { "url": "%s", "sha256": "%s" }' "$key" "$url" "$sha"
@@ -65,9 +89,9 @@ jobs:
             echo
             echo '  }'
             echo '}'
-          } > manifest.json
+          } > dist/manifest.json
           echo "----- manifest.json -----"
-          cat manifest.json
+          cat dist/manifest.json
 
       - name: Publish release in ${{ env.DIST_REPO }}
         env:
@@ -78,4 +102,4 @@ jobs:
             --repo "$DIST_REPO" \
             --title "$TAG" \
             --notes "Automated release of decenzed-node $TAG" \
-            dist/decenzed-node-* dist/manifest.json
+            dist/decenzed-node-* dist/manifest.json install-openwrt.sh
