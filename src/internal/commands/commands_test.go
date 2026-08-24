@@ -137,6 +137,26 @@ func TestLinkHostPrefersDuckDNS(t *testing.T) {
 	if got := linkHost(c); got != "decenzed-node-xyz.duckdns.org" {
 		t.Errorf("linkHost = %q", got)
 	}
+	// An explicit subdomain wins over the legacy decenzed-node-<id> fallback.
+	c.DuckDNSSubdomain = "my-vpn"
+	if got := linkHost(c); got != "my-vpn.duckdns.org" {
+		t.Errorf("linkHost with subdomain = %q", got)
+	}
+}
+
+func TestNormalizeDuckDNSLabel(t *testing.T) {
+	cases := map[string]string{
+		"my-vpn":                      "my-vpn",
+		" My-VPN ":                    "my-vpn",
+		"my-vpn.duckdns.org":          "my-vpn",
+		"https://my-vpn.duckdns.org/": "my-vpn",
+		"http://my-vpn.duckdns.org":   "my-vpn",
+	}
+	for in, want := range cases {
+		if got := normalizeDuckDNSLabel(in); got != want {
+			t.Errorf("normalizeDuckDNSLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestLoadWindowAveragesBytes(t *testing.T) {

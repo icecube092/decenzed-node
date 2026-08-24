@@ -26,9 +26,10 @@ func cmdSetup(r *bufio.Reader) error {
 		c = config.Default()
 	}
 
-	fmt.Println("decenzed-node setup — press Enter to accept the [default].")
+	fmt.Println("decenzed-node setup — Enter keeps the [current] value; type 'no' to clear it.")
 
-	c.Port = askPort(r, c.Port)
+	// Network readiness first: public IP -> port -> self-ping -> speed test.
+	detectedIP := networkPrecheck(r, &c)
 
 	if v := ask(r, "Blocked protocols (comma-separated, or 'no' to block none)", strings.Join(orDefault(c.BlockProtocols, []string{"bittorrent"}), ",")); v != "" {
 		if isNo(v) {
@@ -37,32 +38,40 @@ func cmdSetup(r *bufio.Reader) error {
 			c.BlockProtocols = splitCSV(v)
 		}
 	}
-	if v := ask(r, "Per-user speed cap (e.g. 10mbit, unlimited)", formatBandwidth(nonZeroF(c.MaxUserBps, 10e6/8))); v != "" {
-		if bps, perr := parseBandwidth(v); perr == nil {
+	if v := ask(r, "Per-user speed cap (e.g. 50mbit, 'no' = unlimited)", formatBandwidth(nonZeroF(c.MaxUserBps, 50e6/8))); v != "" {
+		if isNo(v) {
+			c.MaxUserBps = 0 // clear the cap
+		} else if bps, perr := parseBandwidth(v); perr == nil {
 			c.MaxUserBps = bps
 		} else {
 			fmt.Println("  ! keeping previous value:", perr)
 		}
 	}
 
-	// DuckDNS dynamic DNS (optional but recommended). With a token the node keeps
-	// decenzed-node-<id>.duckdns.org pointed at its current IP, and share links
-	// use that domain (surviving IP changes) instead of the raw IP.
-	c.DuckDNSToken = strings.TrimSpace(ask(r, "DuckDNS token (blank = put the raw IP in links)", c.DuckDNSToken))
-	if isNo(c.DuckDNSToken) {
-		c.DuckDNSToken = ""
-	}
-	if c.DuckDNSToken != "" && c.NodeID == "" {
-		c.NodeID = newNodeID()
+	// DuckDNS dynamic DNS (optional but recommended). With a token + a subdomain
+	// you created on duckdns.org, the node keeps <subdomain>.duckdns.org pointed at
+	// its current IP, and share links use that domain (surviving IP changes)
+	// instead of the raw IP.
+	c.DuckDNSToken = askClearable(r, "DuckDNS token (Enter keeps current; 'no' = raw IP in links)", c.DuckDNSToken)
+	if c.DuckDNSToken != "" {
+		if c.NodeID == "" {
+			c.NodeID = newNodeID()
+		}
+		fmt.Println("\n>>> DuckDNS does NOT auto-create subdomains. Sign in at https://www.duckdns.org,")
+		fmt.Println(">>> add a subdomain, then enter its label below (without \".duckdns.org\").")
+		def := c.DuckDNSSubdomain
+		if def == "" {
+			def = c.DuckDNSDomain() // legacy decenzed-node-<id> fallback
+		}
+		c.DuckDNSSubdomain = normalizeDuckDNSLabel(askClearable(r, "DuckDNS subdomain you created (without .duckdns.org)", def))
 	}
 	if h := c.DuckDNSHost(); h != "" {
-		fmt.Printf("\n>>> Registering %s via your DuckDNS token (no manual setup needed).\n", h)
-		fmt.Printf(">>> The node will keep it pointed at your IP (checked every 30s).\n")
-		// Register + point the domain at our current IP right away so links work
-		// immediately; DuckDNS creates decenzed-node-<id> from the token itself.
+		fmt.Printf("\n>>> The node will keep %s pointed at your IP (checked every 30s).\n", h)
+		// Point the domain at our current IP right away so links work immediately.
+		// The subdomain must already exist in your DuckDNS account, or this fails.
 		if ip, dErr := pointDuckDNS(context.Background(), c); dErr != nil {
-			fmt.Printf("  ! could not register %s yet: %v\n", h, dErr)
-			fmt.Printf("    (double-check the DuckDNS token, then re-run setup or 'check')\n\n")
+			fmt.Printf("  ! could not update %s yet: %v\n", h, dErr)
+			fmt.Printf("    (create the subdomain on duckdns.org and check the token, then re-run setup or 'check')\n\n")
 		} else {
 			fmt.Printf("  ok — %s now points at %s\n\n", h, ip)
 		}
@@ -70,9 +79,9 @@ func cmdSetup(r *bufio.Reader) error {
 		// Public IP for links (only used when DuckDNS is off).
 		def := c.PublicIP
 		if def == "" {
-			def = fetchPublicIP()
+			def = detectedIP
 		}
-		c.PublicIP = ask(r, "Public IP (for share links; blank = auto-detect each time)", def)
+		c.PublicIP = askClearable(r, "Public IP (for share links; 'no' = auto-detect each time)", def)
 	}
 
 	c.Autostart = true // the service always enables boot-start
@@ -114,16 +123,91 @@ func cmdSetup(r *bufio.Reader) error {
 
 	fmt.Println("\nsaved:", path)
 	fmt.Printf("REALITY domain: %s  (short id %s)\n", firstOr(c.RealityServerName), first(c.RealityShortIDs))
-	fmt.Println("\nnext: 'service install' to run in the background, then 'link' to share.")
-	fmt.Println("your connection link:")
+
+	// Final step: install + start the background service so the node runs on boot.
+	// Still available on its own via 'service install'. Needs admin/root, so a
+	// failure here is a hint, not a hard error — setup already saved everything.
+	if ans := ask(r, "\nInstall & start the background service now? (needs admin/root)", "yes"); !isNo(ans) {
+		if err := cmdService([]string{"install"}); err != nil {
+			fmt.Printf("  ! %v\n", err)
+			fmt.Println("    (re-run later with admin/root: decenzed-node service install)")
+		}
+	} else {
+		fmt.Println("skipped — run it later with: decenzed-node service install")
+	}
+
+	fmt.Println("\nyour connection link (share with: decenzed-node link):")
 	printLinks(c)
 	return nil
 }
 
+// askClearable asks q showing current as the [default]. Pressing Enter keeps
+// current; typing a negative sentinel ("no"/"none"/"off"/"-") clears it to "".
+func askClearable(r *bufio.Reader, q, current string) string {
+	v := strings.TrimSpace(ask(r, q, current))
+	if isNo(v) {
+		return ""
+	}
+	return v
+}
+
+// networkPrecheck runs the up-front readiness check at the top of setup, in
+// order: detect the public IP, choose (and warn about forwarding) the port,
+// self-ping that port via the public IP, then measure speed. Returns the
+// detected public IP so callers can reuse it as a default. It mutates c.Port.
+func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
+	// 1. Public IP.
+	ip := fetchPublicIP()
+	if ip == "" {
+		fmt.Println("public IP:         could not detect (check your internet)")
+	} else {
+		fmt.Printf("public IP:         %s\n", ip)
+		if isCGNATorPrivate(ip) {
+			fmt.Println("  ! this looks like a CGNAT/private IP — inbound connections may not")
+			fmt.Println("    reach you; ask your ISP for a public ('white') IP, or use a VPS.")
+		}
+	}
+
+	// 2. Warn about forwarding, then pick the port.
+	fmt.Println("\nFriends connect INBOUND to this machine, so you must forward one TCP")
+	fmt.Println("port on your router to it. Pick that port now:")
+	c.Port = askPort(r, c.Port)
+	printPortForwardHelp(c.Port, ip, localIPv4s())
+
+	// 3. Self-ping that port from the public IP (temp listener stands in for the
+	//    not-yet-running node).
+	if ip != "" {
+		fmt.Printf("\nself-check:        dialing %s:%d ...\n", ip, c.Port)
+		if err := selfPortCheck(ip, c.Port, 6*time.Second); err != nil {
+			fmt.Printf("  ! could not reach %s:%d from here: %v\n", ip, c.Port, err)
+			fmt.Println("    (this is normal from inside your own LAN — many routers can't")
+			fmt.Println("     loop back to your public IP; test from mobile data to be sure.)")
+		} else {
+			fmt.Printf("  ok — %s:%d accepted a TCP connection.\n", ip, c.Port)
+		}
+	}
+
+	// 4. Speed test.
+	runSpeedTest()
+	fmt.Println()
+	return ip
+}
+
 // newNodeID returns a short, globally-unique, sortable id (xid) used as the
-// stable DuckDNS subdomain label: decenzed-node-<id>.
+// stable node identity (and the legacy DuckDNS label decenzed-node-<id>).
 func newNodeID() string {
 	return xid.New().String()
+}
+
+// normalizeDuckDNSLabel extracts the bare subdomain label a user might paste in
+// several shapes: "https://foo.duckdns.org/", "foo.duckdns.org", or just "foo".
+func normalizeDuckDNSLabel(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimSuffix(s, "/")
+	s = strings.TrimSuffix(s, ".duckdns.org")
+	return strings.TrimSpace(s)
 }
 
 // chooseRealityDomain scans the node's /24 neighbourhood then a seed list for a

@@ -129,7 +129,10 @@ A wizard asks (Enter for the default):
 - **Port** (443 / 8443 / custom).
 - **Blocked protocols** (default `bittorrent`; type `no` to block none).
 - **Per-user speed cap** (default 10 Mbit/s).
-- **DuckDNS token** (optional; keeps a stable domain pointed at your IP).
+- **DuckDNS token** (optional; keeps a stable domain pointed at your IP). If you
+  give a token, it then asks for the **subdomain** you created on
+  [duckdns.org](https://www.duckdns.org) (DuckDNS does not auto-create it — sign
+  in, add a subdomain, and enter its label without `.duckdns.org`).
 - **Public IP** (blank = auto-detect for links).
 
 Then it automatically **scans for a REALITY camouflage domain** (a live TLS 1.3 +

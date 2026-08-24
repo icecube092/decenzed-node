@@ -27,19 +27,7 @@ func cmdCheck(r *bufio.Reader) error {
 		}
 	}
 
-	fmt.Println("\nrunning a speed test (~25 MB up/down)...")
-	sctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)
-	sp, sErr := speedtest.Run(sctx)
-	cancel()
-	if sErr != nil {
-		fmt.Println("  ! speed test could not run:", sErr)
-	} else {
-		fmt.Printf("download:          %.1f Mbit/s\n", sp.DownMbps)
-		fmt.Printf("upload:            %.1f Mbit/s\n", sp.UpMbps)
-		if sp.Best() < 10 {
-			fmt.Printf("  ! upload is low (%.1f Mbit/s) — clients will be slow.\n", sp.Best())
-		}
-	}
+	runSpeedTest()
 
 	port := 443
 	var cfg config.AppConfig
@@ -68,6 +56,7 @@ func cmdCheck(r *bufio.Reader) error {
 
 	// Self-reachability: connect back to our own domain/IP on the node port to
 	// confirm the port is actually reachable from the outside (port-forwarding).
+	reachable := false
 	if host := selfCheckHost(cfg, ip); host != "" {
 		fmt.Printf("\nself-check:        dialing %s:%d ...\n", host, port)
 		if err := selfReach(host, port, 6*time.Second); err != nil {
@@ -76,10 +65,14 @@ func cmdCheck(r *bufio.Reader) error {
 			fmt.Println("     loop back to your public IP; test from mobile data to be sure.)")
 		} else {
 			fmt.Printf("  ok — %s:%d accepted a TCP connection.\n", host, port)
+			reachable = true
 		}
 	}
 
-	printPortForwardHelp(port, ip, localIPv4s())
+	// Only nudge about port-forwarding when we couldn't confirm reachability.
+	if !reachable {
+		printPortForwardHelp(port, ip, localIPv4s())
+	}
 	return nil
 }
 
@@ -124,6 +117,46 @@ func selfReach(host string, port int, timeout time.Duration) error {
 		return err
 	}
 	return conn.Close()
+}
+
+// selfPortCheck confirms host:port is reachable from here. During setup the node
+// isn't listening yet, so it spins up a throwaway TCP listener on the port for the
+// duration of the dial; if the port is already bound (e.g. the running node), it
+// dials the existing listener instead. A failure from inside your own LAN is not
+// conclusive — many home routers can't hairpin back to their public IP.
+func selfPortCheck(host string, port int, timeout time.Duration) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err == nil {
+		defer ln.Close()
+		go func() {
+			for {
+				conn, aerr := ln.Accept()
+				if aerr != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+	}
+	return selfReach(host, port, timeout)
+}
+
+// runSpeedTest measures up/down throughput and prints the result, warning when
+// upload is too low to serve clients well.
+func runSpeedTest() {
+	fmt.Println("\nrunning a speed test (~25 MB up/down)...")
+	sctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)
+	sp, sErr := speedtest.Run(sctx)
+	cancel()
+	if sErr != nil {
+		fmt.Println("  ! speed test could not run:", sErr)
+		return
+	}
+	fmt.Printf("download:          %.1f Mbit/s\n", sp.DownMbps)
+	fmt.Printf("upload:            %.1f Mbit/s\n", sp.UpMbps)
+	if sp.Best() < 10 {
+		fmt.Printf("  ! upload is low (%.1f Mbit/s) — clients will be slow.\n", sp.Best())
+	}
 }
 
 func printPortForwardHelp(port int, publicIP string, local []string) {

@@ -54,6 +54,12 @@ func runNode(ctx context.Context) error {
 	}
 	defer rt.Stop()
 
+	// Tell the runtime which users to read stats for; without this the per-UUID
+	// counter lookups have nothing to iterate and traffic always reads zero.
+	if err := rt.SetActiveUUIDs(c.UUIDs()); err != nil {
+		log.Println("stats: track users:", err)
+	}
+
 	if c.MaxUserBps > 0 {
 		inner := innerPortFor(c.Port)
 		px := throttle.NewProxy(fmt.Sprintf(":%d", c.Port), fmt.Sprintf("127.0.0.1:%d", inner), c.MaxUserBps)
