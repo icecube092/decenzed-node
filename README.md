@@ -43,10 +43,10 @@ wget -O - https://github.com/icecube092/decenzed-node/releases/latest/download/i
 Then, on the router:
 
 ```sh
-decenzed-node setup            # pick port 8443 (443 is taken by LuCI), scan a REALITY domain, make keys
-decenzed-node service install  # autostart on boot (native procd service)
-decenzed-node check            # public IP, speed test, and port-forward guidance
-decenzed-node link             # the vless:// link to paste into your client
+decenzed-node setup   # network check + port 8443 (443 is taken by LuCI) + REALITY + keys,
+                      # then installs the procd boot service as its last step
+decenzed-node link    # the vless:// link to paste into your client
+# later: decenzed-node check   # re-verify the RUNNING node is reachable from outside
 ```
 
 Notes for routers:
@@ -125,36 +125,50 @@ isn't covered, open an issue with the output of `uname -m` and
 ```bash
 decenzed-node setup
 ```
-A wizard asks (Enter for the default):
-- **Port** (443 / 8443 / custom).
-- **Blocked protocols** (default `bittorrent`; type `no` to block none).
-- **Per-user speed cap** (default 10 Mbit/s).
-- **DuckDNS token** (optional; keeps a stable domain pointed at your IP). If you
-  give a token, it then asks for the **subdomain** you created on
-  [duckdns.org](https://www.duckdns.org) (DuckDNS does not auto-create it — sign
-  in, add a subdomain, and enter its label without `.duckdns.org`).
-- **Public IP** (blank = auto-detect for links).
+The wizard starts with a **network readiness check**, in order:
+1. Detects your **public IP** (warns if it looks like CGNAT).
+2. Asks which **TCP port** to forward, then prints step-by-step **port-forward**
+   instructions for your router.
+3. **Self-checks** that port from your public IP (it spins up a temporary
+   listener, since the node isn't running yet).
+4. Runs a **speed test**.
 
-Then it automatically **scans for a REALITY camouflage domain** (a live TLS 1.3 +
-HTTP/2 site near you), **generates your REALITY keypair**, creates your first
-client, and writes the xray config. It prints your first share link at the end.
+Then it asks the policy questions — press **Enter** to keep the value shown in
+`[brackets]`, or type **`no`** to clear/disable it:
+- **Blocked protocols** (default `bittorrent`; `no` = block none).
+- **Per-user speed cap** (default 50 Mbit/s; `no` = unlimited).
+- **DuckDNS token** (optional; keeps a stable domain pointed at your IP). With a
+  token it also asks for the **subdomain** you created on
+  [duckdns.org](https://www.duckdns.org) — DuckDNS does **not** auto-create it, so
+  sign in, add a subdomain, and enter its label without `.duckdns.org`.
+- **Public IP** for share links (`no` = auto-detect each time; only asked when
+  DuckDNS is off).
 
-## 5. Check your machine
+It then **scans for a REALITY camouflage domain** (a live TLS 1.3 + HTTP/2 site
+near you), **generates your REALITY keypair**, creates your first client, writes
+the xray config, and — as its **final step** — offers to **install & start the
+boot service** (needs admin/root). It prints your first share link at the end.
+
+## 5. Check a running node
 ```bash
 decenzed-node check
 ```
-Shows your public IP, runs a speed test, refreshes your DuckDNS record, and dials
-**back to your own domain/IP** on the node port to confirm it is reachable from
-outside. Then it prints step-by-step **port-forward** instructions for your
-router. Fix forwarding/firewall until the self-check passes and friends can reach
-the port. (A serving machine mostly uploads, so ≥10 Mbit/s upload is recommended;
-the loopback self-check may fail from inside your own LAN even when forwarding is
-correct — test from mobile data to be sure.)
+Run this once the node is up (setup installs the service for you). It shows your
+public IP, runs a speed test, refreshes your DuckDNS record, and dials **back to
+your own domain/IP** on the node port to confirm the **running service** is
+reachable from outside. If the self-check passes it stops there; if it can't
+confirm reachability it prints **port-forward** instructions to fix. (A serving
+machine mostly uploads, so ≥10 Mbit/s upload is recommended; the loopback
+self-check may fail from inside your own LAN even when forwarding is correct —
+test from mobile data to be sure.)
 
-## 6. Run it in the background
+## 6. Background service
+`setup` already installs and starts the boot service on its last step. To manage
+it directly:
 ```bash
-decenzed-node service install     # enable autostart + start now (needs admin/root)
 decenzed-node service status
+decenzed-node service install     # (re)install + start now (needs admin/root)
+decenzed-node service restart     # apply a new binary after 'update'
 ```
 Or run in the foreground for a quick test: `decenzed-node start`.
 

@@ -5,7 +5,8 @@
 # prebuilt binary from the latest GitHub release, verifies its SHA-256 against
 # the release manifest, installs it, and puts `decenzed-node` on your PATH.
 # It does NOT configure the proxy — after it finishes you run `decenzed-node
-# setup` (and `decenzed-node service install` to autostart on boot).
+# setup`, which runs a network check, generates keys, and (as its last step)
+# installs the boot service for you.
 #
 # Usage (on the router, as root):
 #   wget -O - https://github.com/icecube092/decenzed-node/releases/latest/download/install-openwrt.sh | sh
@@ -151,10 +152,12 @@ main() {
 	say "on PATH as: decenzed-node"
 	say ""
 	say "next steps:"
-	say "  1. decenzed-node setup            # pick port 8443, scan REALITY domain, make keys"
-	say "  2. decenzed-node service install  # autostart on boot (procd)"
-	say "  3. decenzed-node check            # public IP, speed, port-forward help"
-	say "  4. decenzed-node link             # print the share link for your phone/friends"
+	say "  1. decenzed-node setup   # network check + port 8443 + REALITY + keys, then"
+	say "                           # installs the boot service (procd) as its last step"
+	say "  2. decenzed-node link    # print the share link for your phone/friends"
+	say ""
+	say "  later: decenzed-node check   # re-verify the RUNNING node is reachable from outside"
+	say "         decenzed-node stats   # traffic, load, active clients"
 	say ""
 	say "notes:"
 	say "  - Port 443 is used by LuCI — keep the default 8443 in setup. If you choose a"
