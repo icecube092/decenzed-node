@@ -12,7 +12,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	c := Default()
 	c.PublicIP = "203.0.113.7"
-	c.MonthlyLimitBytes = 123456
+	c.MaxUserBps = 1_250_000
 	c.DomainDeny = []string{"bad.com"}
 	c.Clients = []Client{{UUID: "u-1", Name: "me"}, {UUID: "u-2", Name: "friend"}}
 
@@ -20,7 +20,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	got, err := Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, c.PublicIP, got.PublicIP)
-	assert.Equal(t, c.MonthlyLimitBytes, got.MonthlyLimitBytes)
+	assert.Equal(t, c.MaxUserBps, got.MaxUserBps)
 	assert.Equal(t, []string{"bad.com"}, got.DomainDeny)
 	assert.Equal(t, []string{"u-1", "u-2"}, got.UUIDs())
 }

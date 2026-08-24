@@ -1,8 +1,8 @@
 // Package nodestats persists a small runtime snapshot the daemon writes and the
 // CLI reads. The `decenzed-node stats` command runs as a SEPARATE process from
 // the running daemon, so it cannot read xray's in-memory counters directly;
-// instead the daemon writes this snapshot (traffic totals, quota, last root
-// status) to stats.json every tick, and the CLI renders it.
+// instead the daemon writes this snapshot (traffic totals, load, run status)
+// to stats.json every tick, and the CLI renders it.
 package nodestats
 
 import (
@@ -29,16 +29,9 @@ type Snapshot struct {
 	RecentBps    float64 `json:"recent_bps"`
 	BandwidthCap float64 `json:"bandwidth_cap_bps"`
 
-	// Traffic (bytes). Total* are lifetime and persist across restarts; Period*
-	// are the current monthly period.
-	TotalUp    uint64 `json:"total_up"`
-	TotalDown  uint64 `json:"total_down"`
-	PeriodUsed uint64 `json:"period_used"`
-
-	// Monthly quota context.
-	MonthlyLimit uint64    `json:"monthly_limit"`
-	Paused       bool      `json:"paused"`
-	PeriodStart  time.Time `json:"period_start"`
+	// Traffic (bytes). Lifetime totals that persist across restarts.
+	TotalUp   uint64 `json:"total_up"`
+	TotalDown uint64 `json:"total_down"`
 
 	Port int `json:"port"`
 }

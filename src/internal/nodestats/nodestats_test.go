@@ -19,8 +19,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		Running:           true,
 		ClientsConfigured: 2,
 		ActiveClients:     3,
-		TotalUp:           100, TotalDown: 250, PeriodUsed: 350,
-		MonthlyLimit: 1000, Port: 8443,
+		TotalUp:           100,
+		TotalDown:         250,
+		Port:              8443,
 	}
 	if err := Save(p, in); err != nil {
 		t.Fatal(err)

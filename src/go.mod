@@ -3,8 +3,10 @@ module decenzed/node_app
 go 1.26
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/kardianos/service v1.3.0
 	github.com/minio/selfupdate v0.6.0
+	github.com/rs/xid v1.5.0
 	github.com/stretchr/testify v1.12.0
 	github.com/xtls/xray-core v1.260327.0
 )

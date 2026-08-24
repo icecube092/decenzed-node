@@ -45,13 +45,11 @@ type AppConfig struct {
 	PublicIP string `json:"public_ip"` // used in share links when DuckDNS is off; auto-detected if empty
 
 	// Policy.
-	MaxUserBps        float64  `json:"max_user_bps"`        // per-user speed cap (bytes/sec); 0 = off
-	MonthlyLimitBytes uint64   `json:"monthly_limit_bytes"` // 0 = unlimited
-	ResetDay          int      `json:"reset_day"`           // 1..28
-	BlockProtocols    []string `json:"block_protocols"`     // e.g. ["bittorrent"]
-	DomainAllow       []string `json:"domain_allow"`        // if set: allow ONLY these
-	DomainDeny        []string `json:"domain_deny"`         // always blocked
-	Autostart         bool     `json:"autostart"`
+	MaxUserBps     float64  `json:"max_user_bps"`    // per-user speed cap (bytes/sec); 0 = off
+	BlockProtocols []string `json:"block_protocols"` // e.g. ["bittorrent"]; empty = block nothing
+	DomainAllow    []string `json:"domain_allow"`    // if set: allow ONLY these
+	DomainDeny     []string `json:"domain_deny"`     // always blocked
+	Autostart      bool     `json:"autostart"`
 
 	// REALITY camouflage — dest/serverName chosen at setup by scanning for a
 	// live TLS1.3+h2 site; the keypair is generated locally.
@@ -68,12 +66,10 @@ type AppConfig struct {
 // Default returns a config populated with sensible defaults.
 func Default() AppConfig {
 	return AppConfig{
-		Port:              443,
-		ResetDay:          1,
-		BlockProtocols:    []string{"bittorrent"},
-		Autostart:         true,
-		MonthlyLimitBytes: 0,        // unlimited
-		MaxUserBps:        10e6 / 8, // per-user cap: 10 Mbit/s
+		Port:           443,
+		BlockProtocols: []string{"bittorrent"},
+		Autostart:      true,
+		MaxUserBps:     10e6 / 8, // per-user cap: 10 Mbit/s
 	}
 }
 

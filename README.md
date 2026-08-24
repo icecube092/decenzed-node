@@ -1,5 +1,9 @@
 # decenzed-node — run your own proxy, share links with friends
 
+[![tests](https://github.com/icecube092/decenzed-node/actions/workflows/tests.yml/badge.svg)](https://github.com/icecube092/decenzed-node/actions/workflows/tests.yml)
+[![version](https://img.shields.io/github/v/release/icecube092/decenzed-node?sort=semver)](https://github.com/icecube092/decenzed-node/releases)
+[![license](https://img.shields.io/github/license/icecube092/decenzed-node)](LICENSE)
+
 `decenzed-node` is a **standalone** VLESS + REALITY proxy server you run on your
 own machine (Windows, macOS, Linux). It scans for a camouflage domain, generates
 its own REALITY keys, runs an embedded xray-core, and prints **share links** you
@@ -28,28 +32,32 @@ folder next to the executable (config, xray.json, stats, logs).
 - **One command** — `decenzed-node <command>`.
 - **Service** — once installed, it runs in the background on boot.
 
-## 4. Check your machine
-```bash
-decenzed-node check
-```
-Shows your public IP, runs a speed test, and prints step-by-step **port-forward**
-instructions for your router. Fix forwarding/firewall until friends can reach the
-port. (A serving machine mostly uploads, so ≥10 Mbit/s upload is recommended.)
-
-## 5. Setup
+## 4. Setup
 ```bash
 decenzed-node setup
 ```
 A wizard asks (Enter for the default):
 - **Port** (443 / 8443 / custom).
-- **Monthly traffic limit** (default: unlimited) + **reset day**.
-- **Blocked protocols** (default `bittorrent`).
+- **Blocked protocols** (default `bittorrent`; type `no` to block none).
 - **Per-user speed cap** (default 10 Mbit/s).
+- **DuckDNS token** (optional; keeps a stable domain pointed at your IP).
 - **Public IP** (blank = auto-detect for links).
 
 Then it automatically **scans for a REALITY camouflage domain** (a live TLS 1.3 +
 HTTP/2 site near you), **generates your REALITY keypair**, creates your first
 client, and writes the xray config. It prints your first share link at the end.
+
+## 5. Check your machine
+```bash
+decenzed-node check
+```
+Shows your public IP, runs a speed test, refreshes your DuckDNS record, and dials
+**back to your own domain/IP** on the node port to confirm it is reachable from
+outside. Then it prints step-by-step **port-forward** instructions for your
+router. Fix forwarding/firewall until the self-check passes and friends can reach
+the port. (A serving machine mostly uploads, so ≥10 Mbit/s upload is recommended;
+the loopback self-check may fail from inside your own LAN even when forwarding is
+correct — test from mobile data to be sure.)
 
 ## 6. Run it in the background
 ```bash
@@ -70,9 +78,10 @@ reloads the service automatically.
 
 ## 8. Monitor & tune
 ```bash
-decenzed-node stats                # traffic totals, quota, load, run status
+decenzed-node stats                # traffic totals, load, run status
 decenzed-node logs                 # daemon log
 decenzed-node config node|xray     # inspect app-config / generated xray JSON
+decenzed-node update               # download the latest release and restart
 ```
 **To change any setting, re-run `decenzed-node setup`** — it re-asks every field
 with the current value as the default and rebuilds `xray.json`. You never edit
