@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net"
@@ -13,7 +12,7 @@ import (
 	"decenzed/node_app/internal/speedtest"
 )
 
-func cmdCheck(r *bufio.Reader) error {
+func cmdCheck(r *input) error {
 	fmt.Println("local IPv4:", localIPv4s())
 
 	ip := fetchPublicIP()

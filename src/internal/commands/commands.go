@@ -10,10 +10,12 @@
 package commands
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
 
 	"github.com/kardianos/service"
 )
@@ -32,25 +34,41 @@ func Main() int {
 		return 0
 	}
 
-	stdin := bufio.NewReader(os.Stdin)
+	in := newInput()
 	if len(os.Args) < 2 {
-		return repl(stdin)
+		return repl(in)
 	}
-	if err := dispatch(stdin, os.Args[1:]); err != nil {
+	return runOneShot(in, os.Args[1:])
+}
+
+// runOneShot runs a single command (non-REPL). A Ctrl+D at a prompt exits with
+// code 130; Ctrl+C uses the default (process terminates).
+func runOneShot(in *input, args []string) (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			if r == errEOF || r == errInterrupted {
+				fmt.Fprintln(os.Stderr)
+				code = 130
+				return
+			}
+			panic(r)
+		}
+	}()
+	if err := dispatch(in, args); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
 	return 0
 }
 
-func dispatch(stdin *bufio.Reader, args []string) error {
+func dispatch(in *input, args []string) error {
 	switch args[0] {
 	case "version":
 		fmt.Println("decenzed-node", Version)
 	case "check":
-		return cmdCheck(stdin)
+		return cmdCheck(in)
 	case "setup":
-		return cmdSetup(stdin)
+		return cmdSetup(in)
 	case "link":
 		return cmdLink(args[1:])
 	case "start":
@@ -60,7 +78,9 @@ func dispatch(stdin *bufio.Reader, args []string) error {
 	case "stats":
 		return cmdStats()
 	case "logs":
-		return cmdLogs()
+		return cmdLogs(args[1:])
+	case "debug":
+		return cmdDebug(in)
 	case "config":
 		return cmdConfig(args[1:])
 	case "update":
@@ -74,14 +94,40 @@ func dispatch(stdin *bufio.Reader, args []string) error {
 	return nil
 }
 
-// repl is the interactive shell: prints help, then reads and runs commands.
-func repl(stdin *bufio.Reader) int {
-	fmt.Println("decenzed-node — self-hosted VLESS + REALITY proxy")
+// interactiveCmds take over stdin; in the REPL, entering one prints a mode
+// banner and Ctrl+C returns to the shell rather than quitting the CLI.
+var interactiveCmds = map[string]bool{"setup": true, "check": true, "debug": true, "logs": true}
+
+// repl is the interactive shell. Ctrl+C cancels the RUNNING command (or, at the
+// prompt, is a no-op) instead of exiting; the CLI exits only via 'exit'/'quit'
+// or Ctrl+D.
+func repl(in *input) int {
+	fmt.Println("decenzed-node — self-hosted VLESS proxy")
 	usage()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+
+	var mu sync.Mutex
+	var cancel context.CancelFunc // non-nil only while a command runs
+	go func() {
+		for range sig {
+			mu.Lock()
+			if cancel != nil {
+				cancel() // abort the running command
+			} else {
+				fmt.Print("\n(type 'exit' or press Ctrl-D to quit)\n")
+			}
+			mu.Unlock()
+		}
+	}()
+
 	for {
 		fmt.Print("\ndecenzed> ")
-		line, err := stdin.ReadString('\n')
-		if err != nil {
+		line, eof := promptLine(in)
+		if eof {
+			fmt.Println()
 			return 0
 		}
 		args := strings.Fields(strings.TrimSpace(line))
@@ -95,16 +141,66 @@ func repl(stdin *bufio.Reader) int {
 			fmt.Print("\033[H\033[2J")
 			continue
 		}
-		if err := dispatch(stdin, args); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+		ctx, c := context.WithCancel(context.Background())
+		mu.Lock()
+		cancel = c
+		mu.Unlock()
+		in.setContext(ctx)
+
+		runCommand(in, args)
+
+		mu.Lock()
+		cancel = nil
+		mu.Unlock()
+		in.setContext(context.Background())
+		c()
+	}
+}
+
+// promptLine reads a command line at the shell prompt. The prompt uses a
+// background context so Ctrl+C never cancels it (the signal loop handles it);
+// only Ctrl+D (EOF) ends the shell.
+func promptLine(in *input) (line string, eof bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			if r == errEOF {
+				eof = true
+				return
+			}
+			panic(r)
 		}
+	}()
+	return in.readLine(), false
+}
+
+// runCommand dispatches one command, recovering the Ctrl+C/Ctrl+D unwind so a
+// cancelled interactive command drops back to the shell instead of crashing.
+func runCommand(in *input, args []string) {
+	if interactiveCmds[args[0]] {
+		fmt.Printf("— %s (Ctrl+C to return to the shell) —\n", args[0])
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			switch r {
+			case errInterrupted:
+				fmt.Println("\n^C — cancelled, back to the shell")
+			case errEOF:
+				fmt.Println()
+			default:
+				panic(r)
+			}
+		}
+	}()
+	if err := dispatch(in, args); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 	}
 }
 
 func usage() {
 	fmt.Print(`decenzed-node — run your own proxy, share links with friends
 
-Run with no arguments for an interactive shell (type commands, 'exit' to quit).
+Run with no arguments for an interactive shell. In the shell, Ctrl+C leaves the
+current command (back to the prompt); quit with 'exit' or Ctrl+D.
 Or run one command: decenzed-node <command>
 
 Getting started:
@@ -115,15 +211,17 @@ Getting started:
   4. link                   Print your connection link to share.
 
 Commands:
-  link [list]               Print share links for all clients.
+  link [-l|-s]              Show clients: subscription link; -l adds per-protocol
+                            links, -s adds sing-box outbounds.
   link add [name]           Create a new client (for a friend) and print its link.
   link remove <name|uuid>   Revoke a client.
   start                     Run in the foreground (instead of the service).
-  stats                     Traffic totals, load, and run status.
+  stats                     Protocols, per-client/per-inbound traffic, run status.
+  debug                     Toggle verbose logging (all xray logs to the file).
   config node|xray          Show the app-config / generated xray JSON.
   service install|uninstall|start|stop|restart|status
                             Manage the background service.
-  logs                      Show the daemon log.
+  logs [app|xray] [-f]      Show the log; filter by source; -f to follow.
   update                    Download the latest version and restart the service.
   version · help · exit
 `)

@@ -9,6 +9,7 @@ require (
 	github.com/rs/xid v1.5.0
 	github.com/stretchr/testify v1.12.0
 	github.com/xtls/xray-core v1.260327.0
+	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.49.0
 )
 
@@ -33,6 +34,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f // indirect
+	go.uber.org/multierr v1.10.0 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/mod v0.33.0 // indirect

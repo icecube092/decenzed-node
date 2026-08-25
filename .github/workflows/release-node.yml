@@ -50,6 +50,16 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
+      - name: Install UPX
+        run: |
+          set -euo pipefail
+          UPX_VER=4.2.4
+          curl -fsSL -o /tmp/upx.tar.xz \
+            "https://github.com/upx/upx/releases/download/v${UPX_VER}/upx-${UPX_VER}-amd64_linux.tar.xz"
+          tar -C /tmp -xf /tmp/upx.tar.xz
+          sudo install "/tmp/upx-${UPX_VER}-amd64_linux/upx" /usr/local/bin/upx
+          upx --version | head -1
+
       - name: Build binaries (desktop + OpenWRT router CPUs)
         working-directory: src
         run: |
@@ -64,6 +74,15 @@ jobs:
               go build -trimpath \
               -ldflags "-s -w -X main.version=${TAG} -X decenzed/node_app/internal/selfupdate.VariantKey=${key}" \
               -o "../dist/${out}" ./cmd/decenzed-node || exit 1
+            # Compress to shrink flash footprint (matters for OpenWRT). Skip macOS
+            # (UPX breaks Gatekeeper/codesign); best-effort elsewhere — an
+            # unsupported arch keeps the uncompressed binary. Done BEFORE the
+            # manifest step so its SHA-256 covers the compressed file.
+            if [ "$goos" != "darwin" ]; then
+              upx -q --best --lzma "../dist/${out}" >/dev/null 2>&1 \
+                && echo "    upx: compressed" \
+                || echo "    upx: skipped (unsupported arch?) — kept uncompressed"
+            fi
           done || exit 1
           echo "----- built -----"
           ls -la ../dist

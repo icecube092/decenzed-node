@@ -9,14 +9,20 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"decenzed/node_app/internal/traffic"
 
+	xlog "github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/infra/conf/serial"
 	_ "github.com/xtls/xray-core/main/distro/all"
 )
+
+// LogSink receives xray-core log lines, already mapped to a level string
+// ("error"/"warn"/"info"/"debug").
+type LogSink func(level, text string)
 
 // XrayRuntime embeds a xray-core instance.
 type XrayRuntime struct {
@@ -25,6 +31,9 @@ type XrayRuntime struct {
 	statsMgr stats.Manager
 	uuids    []string // users to query stats for (see Stats)
 	tags     []string // inbound tags to query stats for (see InboundStats)
+
+	sink  LogSink     // where captured xray logs go (nil = discard)
+	debug atomic.Bool // when false, xray info/debug lines are dropped
 }
 
 // NewXray returns a not-yet-started runtime.
@@ -60,7 +69,49 @@ func (x *XrayRuntime) Start(_ context.Context, configJSON []byte) error {
 	if m, ok := inst.GetFeature(stats.ManagerType()).(stats.Manager); ok {
 		x.statsMgr = m
 	}
+	// xray's app/log registered its own handler during Start; override it so we
+	// capture every xray log line into the node's log file. Re-done on each
+	// (re)start because a fresh app/log re-registers.
+	if x.sink != nil {
+		xlog.RegisterHandler(xrayLogHandler{x})
+	}
 	return nil
+}
+
+// SetLogSink installs the destination for captured xray logs (takes effect on
+// the next Start). SetDebug toggles whether xray info/debug lines are kept.
+func (x *XrayRuntime) SetLogSink(sink LogSink) { x.sink = sink }
+
+// SetDebug controls xray log verbosity: when false, only warnings and errors are
+// forwarded to the sink; when true, info and debug lines are kept too.
+func (x *XrayRuntime) SetDebug(on bool) { x.debug.Store(on) }
+
+// xrayLogHandler adapts xray's common/log.Handler to the node's LogSink,
+// mapping severity to a level string and dropping info/debug unless debug mode
+// is on.
+type xrayLogHandler struct{ rt *XrayRuntime }
+
+func (h xrayLogHandler) Handle(msg xlog.Message) {
+	sev := xlog.Severity_Info
+	if gm, ok := msg.(*xlog.GeneralMessage); ok {
+		sev = gm.Severity
+	}
+	// Lower numeric severity is more severe (Error < Warning < Info < Debug).
+	if sev > xlog.Severity_Warning && !h.rt.debug.Load() {
+		return
+	}
+	var level string
+	switch sev {
+	case xlog.Severity_Error:
+		level = "error"
+	case xlog.Severity_Warning:
+		level = "warn"
+	case xlog.Severity_Debug:
+		level = "debug"
+	default:
+		level = "info"
+	}
+	h.rt.sink(level, msg.String())
 }
 
 // Stop closes the instance.

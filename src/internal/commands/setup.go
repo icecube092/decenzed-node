@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -18,7 +17,7 @@ import (
 	"decenzed/node_app/internal/xraygen"
 )
 
-func cmdSetup(r *bufio.Reader) error {
+func cmdSetup(r *input) error {
 	path, err := configPath()
 	if err != nil {
 		return err
@@ -136,13 +135,13 @@ func cmdSetup(r *bufio.Reader) error {
 	}
 
 	fmt.Println("\nyour connection link (share with: decenzed-node link):")
-	printLinks(c)
+	printLinks(c, modeDefault)
 	return nil
 }
 
 // askClearable asks q showing current as the [default]. Pressing Enter keeps
 // current; typing a negative sentinel ("no"/"none"/"off"/"-") clears it to "".
-func askClearable(r *bufio.Reader, q, current string) string {
+func askClearable(r *input, q, current string) string {
 	v := strings.TrimSpace(ask(r, q, current))
 	if isNo(v) {
 		return ""
@@ -154,7 +153,7 @@ func askClearable(r *bufio.Reader, q, current string) string {
 // order: detect the public IP, choose (and warn about forwarding) the port,
 // self-ping that port via the public IP, then measure speed. Returns the
 // detected public IP so callers can reuse it as a default. It mutates c.Port.
-func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
+func networkPrecheck(r *input, c *config.AppConfig) string {
 	// 1. Public IP.
 	ip := fetchPublicIP()
 	if ip == "" {
@@ -174,10 +173,11 @@ func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
 		fmt.Printf("location:          %s (auto-detected)\n", loc)
 	}
 
-	// 2. Warn about forwarding, then pick the port.
+	// 2. Warn about forwarding, then pick the VLESS port — asked the same way as
+	// the other protocols (default 8443).
 	fmt.Println("\nFriends connect INBOUND to this machine, so you must forward one TCP")
-	fmt.Println("port on your router to it. Pick that port now:")
-	c.Port = askPort(r, c.Port)
+	fmt.Println("port on your router to it. Pick the VLESS port now:")
+	c.Port = askProtocolPort(r, "VLESS port", c.Port, vlessDefaultPort)
 	printPortForwardHelp(ip, localIPv4s(), c.Port)
 
 	// 3. Self-ping that port from the public IP (temp listener stands in for the
@@ -202,17 +202,18 @@ func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
 // Recommended port ranges for the optional protocols (a random free port in the
 // range is offered as the default). VLESS keeps its 443/8443 choice.
 const (
-	trojanPortLo = 32000
-	trojanPortHi = 35000
-	ssPortLo     = 35000
-	ssPortHi     = 38000
+	vlessDefaultPort = 8443
+	trojanPortLo     = 32000
+	trojanPortHi     = 35000
+	ssPortLo         = 35000
+	ssPortHi         = 38000
 )
 
 // configureExtraProtocols asks, per protocol, whether to also expose Trojan,
 // Shadowsocks (classic), and/or Shadowsocks-2022 (a y/n question each), and if so
 // on which dedicated TCP port (one port = one protocol). VLESS on c.Port is
 // always on. Generates the Shadowsocks-2022 server key on first enable.
-func configureExtraProtocols(r *bufio.Reader, c *config.AppConfig) {
+func configureExtraProtocols(r *input, c *config.AppConfig) {
 	fmt.Println("\nExtra protocols (optional). One TCP port hosts ONE protocol, so each")
 	fmt.Println("protocol you enable needs its OWN dedicated TCP port, SEPARATE from the")
 	fmt.Println("VLESS port above — and you must forward/open that port too.")
@@ -267,7 +268,7 @@ func configureExtraProtocols(r *bufio.Reader, c *config.AppConfig) {
 // kept as the default and never bumped, so re-running setup while the node holds
 // that port doesn't move it. Collisions with reserved ports are rejected
 // (re-asks); a busy-looking port only warns, without blocking.
-func askProtocolPort(r *bufio.Reader, label string, current, recommended int, reserved ...int) int {
+func askProtocolPort(r *input, label string, current, recommended int, reserved ...int) int {
 	def := current
 	if def == 0 {
 		def = recommended
@@ -322,7 +323,7 @@ func normalizeDuckDNSLabel(s string) string {
 //
 // TLS mode needs a DuckDNS domain (for both the certificate and the DNS-01
 // challenge); without one it falls back to REALITY.
-func configureCamouflage(r *bufio.Reader, c *config.AppConfig) error {
+func configureCamouflage(r *input, c *config.AppConfig) error {
 	fmt.Println("\nCamouflage for VLESS/Trojan:")
 	fmt.Println("  reality — borrow a stranger's TLS site (no domain/cert needed)")
 	fmt.Println("  tls     — masquerade behind YOUR OWN website on your domain. The node")
@@ -377,7 +378,7 @@ const leAgreementURL = "https://letsencrypt.org/repository/"
 // so setup fails loudly if DNS-01 isn't working (rather than at first start). The
 // certificate is for the node's own DuckDNS domain; no domain scan is done. The
 // CA environment (staging vs production) is fixed at build time, not asked here.
-func configureTLS(r *bufio.Reader, c *config.AppConfig) error {
+func configureTLS(r *input, c *config.AppConfig) error {
 	fmt.Printf("\n>>> Masquerading behind your own site at https://%s\n", c.TLSHost())
 	fmt.Println(">>> (the node hosts this site itself — nothing to set up separately)")
 
@@ -428,7 +429,7 @@ func stagingSuffix() string {
 
 // chooseRealityDomain scans the node's /24 neighbourhood then a seed list for a
 // live TLS1.3+h2 site to borrow as REALITY camouflage. Keeps a still-valid pick.
-func chooseRealityDomain(r *bufio.Reader, c *config.AppConfig) error {
+func chooseRealityDomain(r *input, c *config.AppConfig) error {
 	if cur := firstOr(c.RealityServerName); cur != "" {
 		if _, ok := realityscan.Probe(cur, 443, 4*time.Second); ok {
 			fmt.Printf("keeping REALITY domain: %s\n", cur)

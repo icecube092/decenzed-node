@@ -33,16 +33,17 @@ func cmdStats() error {
 	}
 	fmt.Printf("data feed:       %s\n", freshness)
 
-	// Enabled protocols (from the saved config, if present).
+	// Enabled protocols + debug mode (from the saved config, if present).
 	c, cfgErr := loadConfig()
 	if cfgErr == nil {
 		fmt.Printf("protocols:       %s\n", enabledProtocolsLine(c))
+		fmt.Printf("debug mode:      %s\n", onOff(c.Debug))
 	}
 
 	fmt.Println("traffic (up+down):")
 	fmt.Printf("  lifetime:      up %s / down %s  (total %s)\n",
 		humanBytes(st.TotalUp), humanBytes(st.TotalDown), humanBytes(st.TotalUp+st.TotalDown))
-	fmt.Printf("  load (10 min): %s\n", loadLine(st))
+	fmt.Printf("  load (10 min): %.1f Mbit/s total (overall bandwidth is not capped)\n", mbit(st.RecentBps))
 
 	if cfgErr == nil {
 		printPerInbound(c, st)
@@ -109,7 +110,13 @@ func printPerClient(c config.AppConfig, st nodestats.Snapshot) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].d.Total() > rows[j].d.Total() })
 
-	fmt.Println("per client (up+down):")
+	// The speed cap is applied PER CLIENT, so it belongs here (not on the overall
+	// load, which is uncapped).
+	capNote := "  ·  no per-user speed cap"
+	if c.MaxUserBps > 0 {
+		capNote = fmt.Sprintf("  ·  per-user speed cap: %.0f Mbit/s each", mbit(c.MaxUserBps))
+	}
+	fmt.Printf("per client (up+down)%s:\n", capNote)
 	for _, r := range rows {
 		fmt.Printf("  %-14s %s  (up %s / down %s)\n",
 			r.label+":", humanBytes(r.d.Total()), humanBytes(r.d.Up), humanBytes(r.d.Down))
@@ -147,14 +154,6 @@ func runStatus(st nodestats.Snapshot) string {
 	default:
 		return "stopped"
 	}
-}
-
-func loadLine(st nodestats.Snapshot) string {
-	cur := mbit(st.RecentBps)
-	if st.BandwidthCap > 0 {
-		return fmt.Sprintf("%.1f Mbit/s of %.0f Mbit/s cap (%.0f%%)", cur, mbit(st.BandwidthCap), st.RecentBps/st.BandwidthCap*100)
-	}
-	return fmt.Sprintf("%.1f Mbit/s (uncapped)", cur)
 }
 
 func mbit(bps float64) float64 { return bps * 8 / 1e6 }

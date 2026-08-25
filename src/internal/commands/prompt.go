@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,57 +8,13 @@ import (
 	"decenzed/node_app/internal/bytesize"
 )
 
-func ask(r *bufio.Reader, q, def string) string {
+func ask(r *input, q, def string) string {
 	fmt.Printf("%s [%s]: ", q, def)
-	line, err := r.ReadString('\n')
-	line = strings.TrimSpace(line)
+	line := strings.TrimSpace(r.readLine())
 	if line == "" {
-		if err != nil {
-			fmt.Println(def)
-		}
 		return def
 	}
 	return line
-}
-
-var portChoices = []int{443, 8443}
-
-func askPort(r *bufio.Reader, current int) int {
-	def := current
-	if def == 0 {
-		// Fresh setup: default to the first choice that is actually free.
-		def = firstAvailablePort(portChoices)
-	}
-	fmt.Println("Node port (forward this TCP port on your router):")
-	for i, p := range portChoices {
-		mark := ""
-		if p == def {
-			mark = "  <- default"
-		}
-		if !portAvailable(p) {
-			mark += "  (in use)"
-		}
-		fmt.Printf("  %d) %d%s\n", i+1, p, mark)
-	}
-	fmt.Printf("choose 1-%d, or type a port [%d]: ", len(portChoices), def)
-	line, err := r.ReadString('\n')
-	line = strings.TrimSpace(line)
-	if line == "" {
-		if err != nil {
-			fmt.Println(def)
-		}
-		return warnIfBusy(def)
-	}
-	if n, aerr := strconv.Atoi(line); aerr == nil {
-		if n >= 1 && n <= len(portChoices) {
-			return warnIfBusy(portChoices[n-1])
-		}
-		if n >= 1 && n <= 65535 {
-			return warnIfBusy(n)
-		}
-	}
-	fmt.Println("  ! invalid — keeping", def)
-	return warnIfBusy(def)
 }
 
 // warnIfBusy prints a non-blocking notice if the port can't be bound right now
@@ -106,7 +61,7 @@ func floatMul(s string, m float64) (float64, error) {
 
 // askYesNo asks a yes/no question. Enter keeps the default; a leading 'y' (or
 // "yes") is yes, "n"/negative sentinels are no.
-func askYesNo(r *bufio.Reader, q string, def bool) bool {
+func askYesNo(r *input, q string, def bool) bool {
 	d := "n"
 	if def {
 		d = "y"

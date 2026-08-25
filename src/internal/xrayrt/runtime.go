@@ -32,6 +32,10 @@ type Runtime interface {
 	SetActiveUUIDs(uuids []string) error
 	// SetInboundTags records which inbound tags to read per-inbound stats for.
 	SetInboundTags(tags []string) error
+	// SetLogSink installs where captured xray logs are written.
+	SetLogSink(sink LogSink)
+	// SetDebug toggles xray log verbosity (keep info/debug lines when true).
+	SetDebug(on bool)
 }
 
 // Supervise runs fn, restarting it on panic or error, until ctx is cancelled.
@@ -125,6 +129,9 @@ func (s *StubRuntime) SetInboundTags(tags []string) error {
 	s.tags = append([]string(nil), tags...)
 	return nil
 }
+
+func (s *StubRuntime) SetLogSink(LogSink) {}
+func (s *StubRuntime) SetDebug(bool)      {}
 
 // SetStats is a test helper to inject cumulative counters.
 func (s *StubRuntime) SetStats(snap traffic.Snapshot) {

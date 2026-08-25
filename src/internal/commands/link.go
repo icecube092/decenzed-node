@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -21,8 +22,8 @@ func cmdLink(args []string) error {
 		sub = args[0]
 	}
 	switch sub {
-	case "", "list":
-		printLinks(c)
+	case "", "list", "-l", "-s":
+		printLinks(c, linkMode(sub))
 		return nil
 	case "add":
 		name := ""
@@ -38,9 +39,8 @@ func cmdLink(args []string) error {
 			return err
 		}
 		cl := config.Client{UUID: uuid, Name: name}
-		host := linkHost(c)
 		fmt.Println("added client — share the link(s) below:")
-		printClient(c, cl, host)
+		printClient(c, cl, linkHost(c), modeLinks)
 		return nil
 	case "remove":
 		if len(args) < 2 {
@@ -66,12 +66,33 @@ func cmdLink(args []string) error {
 		fmt.Printf("removed %d client(s); the service was reloaded.\n", removed)
 		return nil
 	default:
-		return fmt.Errorf("usage: link [list] | link add [name] | link remove <name|uuid>")
+		return fmt.Errorf("usage: link [-l|-s] | link add [name] | link remove <name|uuid>")
 	}
 }
 
-// saveAndReload persists the config, rebuilds xray.json, and best-effort
-// restarts the service so a client change takes effect immediately.
+// linkView selects how much detail `link` prints per client.
+type linkView int
+
+const (
+	modeDefault linkView = iota // subscription (TLS) or per-protocol links (REALITY)
+	modeLinks                   // + one line per per-protocol connection link
+	modeSingbox                 // + a sing-box outbound per protocol
+)
+
+func linkMode(sub string) linkView {
+	switch sub {
+	case "-l":
+		return modeLinks
+	case "-s":
+		return modeSingbox
+	default:
+		return modeDefault
+	}
+}
+
+// saveAndReload persists the config, rebuilds xray.json, and restarts the
+// service so the change (e.g. a new client's subscription) takes effect
+// immediately — a subscription doesn't work until the running node reloads it.
 func saveAndReload(path string, c config.AppConfig) error {
 	if err := config.Save(path, c); err != nil {
 		return err
@@ -79,13 +100,14 @@ func saveAndReload(path string, c config.AppConfig) error {
 	if err := writeXrayConfig(path, c); err != nil {
 		return err
 	}
-	if svc, err := newService(); err == nil {
-		_ = svc.Restart() // no-op / error if not installed — ignored
+	if err := restartService(); err != nil {
+		fmt.Println("  ! could not restart the service automatically:", err)
+		fmt.Println("    apply the change with: decenzed-node service restart")
 	}
 	return nil
 }
 
-func printLinks(c config.AppConfig) {
+func printLinks(c config.AppConfig, mode linkView) {
 	if len(c.Clients) == 0 {
 		fmt.Println("  (no clients — run 'link add')")
 		return
@@ -95,27 +117,37 @@ func printLinks(c config.AppConfig) {
 		fmt.Println("  ! could not determine public IP; set it in 'setup'")
 	}
 	for _, cl := range c.Clients {
-		printClient(c, cl, host)
+		printClient(c, cl, host, mode)
 	}
 }
 
-// printClient prints one client's SUBSCRIPTION link. In TLS mode the subscription
-// is hosted by the node's own website (behind xray's TLS fallback): the client
-// adds one URL and its app pulls every protocol automatically. In REALITY mode
-// there is no hosted site, so the individual per-protocol links are printed
-// instead (the same content a subscription would carry).
-func printClient(c config.AppConfig, cl config.Client, host string) {
+// printClient prints one client's connection info. In TLS mode a single
+// SUBSCRIPTION link (hosted by the node's own website behind xray's TLS
+// fallback) is always shown; -l additionally prints every per-protocol link so
+// they can be copied individually, and -s prints a sing-box outbound per
+// protocol. In REALITY mode there is no hosted subscription, so per-protocol
+// links are always shown.
+func printClient(c config.AppConfig, cl config.Client, host string, mode linkView) {
 	label := cl.Name
 	if label == "" {
 		label = cl.UUID[:8]
 	}
-	if c.CamouflageTLS() {
-		fmt.Printf("\n  %-12s subscription:\n    %s\n", label, subscriptionURL(c, cl))
-		return
-	}
 	fmt.Printf("\n  %s\n", label)
-	for _, ib := range c.PublicInbounds() {
-		fmt.Printf("    [%-11s] %s\n", protoLabel(ib), clientLink(c, cl, host, ib))
+
+	if c.CamouflageTLS() {
+		fmt.Printf("    subscription:  %s\n", subscriptionURL(c, cl))
+	}
+	// Per-protocol links: always in REALITY (no subscription there); in TLS only
+	// when the operator asked for them with -l.
+	if !c.CamouflageTLS() || mode == modeLinks {
+		for _, ib := range c.PublicInbounds() {
+			fmt.Printf("    [%-11s] %s\n", protoLabel(ib), clientLink(c, cl, host, ib))
+		}
+	}
+	if mode == modeSingbox {
+		for _, ib := range c.PublicInbounds() {
+			fmt.Printf("\n    sing-box outbound [%s]:\n%s\n", protoLabel(ib), clientSingbox(c, cl, host, ib))
+		}
 	}
 }
 
@@ -266,4 +298,110 @@ func ssLink(c config.AppConfig, cl config.Client, host string, port int, method,
 	userinfo := method + ":" + password
 	enc := base64.RawURLEncoding.EncodeToString([]byte(userinfo))
 	return fmt.Sprintf("ss://%s@%s:%d#%s", enc, host, port, url.PathEscape(tag))
+}
+
+// --- sing-box outbound (for `link -s`) ---
+
+// sing-box outbound schema (a subset), so the printed JSON drops straight into a
+// sing-box config's "outbounds" array. One struct per supported protocol.
+type sbVLESS struct {
+	Type       string `json:"type"`
+	Tag        string `json:"tag"`
+	Server     string `json:"server"`
+	ServerPort int    `json:"server_port"`
+	UUID       string `json:"uuid"`
+	Flow       string `json:"flow"`
+	Network    string `json:"network"`
+	TLS        sbTLS  `json:"tls"`
+}
+
+type sbTrojan struct {
+	Type       string `json:"type"`
+	Tag        string `json:"tag"`
+	Server     string `json:"server"`
+	ServerPort int    `json:"server_port"`
+	Password   string `json:"password"`
+	Network    string `json:"network"`
+	TLS        sbTLS  `json:"tls"`
+}
+
+type sbShadowsocks struct {
+	Type       string `json:"type"`
+	Tag        string `json:"tag"`
+	Server     string `json:"server"`
+	ServerPort int    `json:"server_port"`
+	Method     string `json:"method"`
+	Password   string `json:"password"`
+}
+
+type sbTLS struct {
+	Enabled    bool       `json:"enabled"`
+	ServerName string     `json:"server_name"`
+	Reality    *sbReality `json:"reality,omitempty"`
+	UTLS       sbUTLS     `json:"utls"`
+}
+
+type sbReality struct {
+	Enabled   bool   `json:"enabled"`
+	PublicKey string `json:"public_key"`
+	ShortID   string `json:"short_id,omitempty"`
+}
+
+type sbUTLS struct {
+	Enabled     bool   `json:"enabled"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// clientSingbox renders a client as a ready-to-paste sing-box outbound for one
+// inbound protocol (same credentials as the corresponding share link). The
+// outbound tag is the location+protocol name, like the share link.
+func clientSingbox(c config.AppConfig, cl config.Client, host string, ib config.Inbound) string {
+	tag := linkTag(c, ib)
+	var ob any
+	switch ib.Protocol {
+	case config.ProtoVLESS:
+		ob = sbVLESS{
+			Type: "vless", Tag: tag, Server: host, ServerPort: ib.Port,
+			UUID: cl.UUID, Flow: "xtls-rprx-vision", Network: "tcp", TLS: camouflageTLS(c),
+		}
+	case config.ProtoTrojan:
+		ob = sbTrojan{
+			Type: "trojan", Tag: tag, Server: host, ServerPort: ib.Port,
+			Password: cl.UUID, Network: "tcp", TLS: camouflageTLS(c),
+		}
+	case config.ProtoShadowsocks:
+		password := cl.UUID
+		if config.IsSS2022(ib.Method) {
+			password = c.SSServerKey + ":" + config.SSUserPSK(cl.UUID)
+		}
+		ob = sbShadowsocks{
+			Type: "shadowsocks", Tag: tag, Server: host, ServerPort: ib.Port,
+			Method: ib.Method, Password: password,
+		}
+	default:
+		return ""
+	}
+	b, err := json.MarshalIndent(ob, "    ", "  ")
+	if err != nil {
+		return ""
+	}
+	return "    " + string(b)
+}
+
+// camouflageTLS builds the sing-box TLS block for VLESS/Trojan — a REALITY block,
+// or plain TLS to the node's own domain when masquerading behind its website.
+func camouflageTLS(c config.AppConfig) sbTLS {
+	if c.CamouflageTLS() {
+		return sbTLS{
+			Enabled:    true,
+			ServerName: c.TLSHost(),
+			UTLS:       sbUTLS{Enabled: true, Fingerprint: "chrome"},
+		}
+	}
+	return sbTLS{
+		Enabled:    true,
+		ServerName: firstOr(c.RealityServerName),
+		Reality:    &sbReality{Enabled: true, PublicKey: c.RealityPublicKey, ShortID: first(c.RealityShortIDs)},
+		UTLS:       sbUTLS{Enabled: true, Fingerprint: "chrome"},
+	}
 }

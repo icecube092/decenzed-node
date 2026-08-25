@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -70,25 +69,6 @@ func loadConfig() (config.AppConfig, error) {
 		return config.AppConfig{}, err
 	}
 	return config.Load(path)
-}
-
-// setupDaemonLog sends daemon logs to node.log (the service has no console).
-func setupDaemonLog(cfgPath string) func() {
-	p := logFilePath(cfgPath)
-	flag := os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	if fi, err := os.Stat(p); err == nil && fi.Size() > 4<<20 {
-		flag = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	}
-	f, err := os.OpenFile(p, flag, 0o600)
-	if err != nil {
-		return nil
-	}
-	// File only — under a Windows service os.Stderr is invalid and an
-	// io.MultiWriter would abort the file write on its error.
-	log.SetOutput(f)
-	log.SetFlags(log.LstdFlags)
-	log.Println("=== daemon log start ===")
-	return func() { _ = f.Close() }
 }
 
 // --- public/local IP helpers ---
@@ -223,17 +203,6 @@ func recommendPortInRange(lo, hi int, taken ...int) int {
 		}
 	}
 	return lo
-}
-
-// firstAvailablePort returns the first free port from choices, or choices[0] if
-// none are free (so the caller still has a usable default).
-func firstAvailablePort(choices []int) int {
-	for _, p := range choices {
-		if portAvailable(p) {
-			return p
-		}
-	}
-	return choices[0]
 }
 
 // --- ids ---

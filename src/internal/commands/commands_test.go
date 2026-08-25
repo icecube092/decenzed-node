@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bufio"
 	"encoding/base64"
 	"net"
 	"strings"
@@ -22,7 +21,7 @@ func TestAskProtocolPortKeepsSavedPort(t *testing.T) {
 	defer busy.Close()
 	saved := busy.Addr().(*net.TCPAddr).Port // a port that is definitely in use
 
-	r := bufio.NewReader(strings.NewReader("\n")) // press Enter = keep default
+	r := newInputFrom(strings.NewReader("\n")) // press Enter = keep default
 	got := askProtocolPort(r, "test port", saved, 39999 /*recommended, different*/, 443)
 	if got != saved {
 		t.Errorf("askProtocolPort kept %d, want saved %d", got, saved)

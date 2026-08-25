@@ -93,6 +93,20 @@ func cmdService(args []string) error {
 	}
 }
 
+// restartService best-effort restarts the background service so a config change
+// takes effect immediately. Handles both procd (OpenWRT) and kardianos-managed
+// services. Returns an error only if a restart was attempted and failed.
+func restartService() error {
+	if procdAvailable() {
+		return procdCtl("restart")
+	}
+	svc, err := newService()
+	if err != nil {
+		return err
+	}
+	return svc.Restart()
+}
+
 func statusString(s service.Status) string {
 	switch s {
 	case service.StatusRunning:
@@ -121,17 +135,7 @@ func cmdUpdate() error {
 		return nil
 	}
 	fmt.Printf("installed %s — restarting the service...\n", ver)
-	restart := func() error {
-		if procdAvailable() {
-			return procdCtl("restart")
-		}
-		svc, sErr := newService()
-		if sErr != nil {
-			return sErr
-		}
-		return svc.Restart()
-	}
-	if rErr := restart(); rErr != nil {
+	if rErr := restartService(); rErr != nil {
 		fmt.Println("  ! could not restart the service automatically:", rErr)
 		fmt.Println("    restart it yourself with: decenzed-node service restart")
 		return nil

@@ -30,10 +30,11 @@ It offers **two camouflage modes** for VLESS/Trojan (you pick one in `setup`):
   machine a **fixed LAN IP via a DHCP reservation** (bind its MAC to one address
   in your router's DHCP settings). Otherwise its LAN IP can change on reboot/lease
   renewal and your port-forward will silently point at the wrong device.
-- Open/forward one TCP port for VLESS (default **443**; you can pick **8443**).
-  **One TCP port hosts exactly one protocol** — if you also enable **Trojan**
-  and/or **Shadowsocks**, each needs its **own additional** forwarded/opened TCP
-  port (e.g. VLESS 8443, Trojan 8444, Shadowsocks 9443).
+- Open/forward one TCP port for VLESS (default **8443**). **One TCP port hosts
+  exactly one protocol** — if you also enable **Trojan** and/or **Shadowsocks**,
+  each needs its **own additional** forwarded/opened TCP port. `setup` asks for
+  every port the same way and pre-fills a free one (Trojan `32000–35000`,
+  Shadowsocks `35000–38000`).
 - Admin/root rights only to install the background **service**.
 
 ## 2. Get the binary
@@ -60,12 +61,14 @@ Then, on the router:
 ```sh
 decenzed-node setup   # network check + port 8443 (443 is taken by LuCI) + camouflage
                       # (REALITY or your own TLS site), then installs the procd boot service
-decenzed-node link    # the vless:// link to paste into your client
+decenzed-node link    # the connection link to paste into your client
 # later: decenzed-node check   # re-verify the RUNNING node is reachable from outside
 ```
 
 Notes for routers:
-- The binary is **~32 MB**. Devices with only 8–16 MB of flash need USB storage +
+- Release binaries are **UPX-compressed** (~**10–12 MB** on disk; ~30 MB
+  uncompressed, decompressed into RAM at startup). Devices with only 8–16 MB of
+  flash may still need USB storage +
   [extroot](https://openwrt.org/docs/guide-user/additional-software/extroot_configuration):
   re-run the installer with `DIR=/mnt/usb`, and/or set
   `DECENZED_DATA=/mnt/usb/decenzed-data` so config/logs live off the flash.
@@ -158,7 +161,9 @@ isn't covered, open an issue with the output of `uname -m` and
 
 ## 3. How to run it
 - **Interactive shell** — double-click the `.exe` (Windows) or run with no
-  arguments. A prompt opens where you type commands; it stays open until `exit`.
+  arguments. A prompt opens where you type commands. **Ctrl+C** leaves the current
+  command and returns to the prompt (it does **not** quit); exit the shell with
+  `exit`/`quit` or **Ctrl+D**.
 - **One command** — `decenzed-node <command>`.
 - **Service** — once installed, it runs in the background on boot.
 
@@ -228,32 +233,46 @@ Or run in the foreground for a quick test: `decenzed-node start`.
 
 ## 7. Share with friends — the `link` command
 ```bash
-decenzed-node link                 # print the subscription link for all clients
+decenzed-node link                 # subscription link per client
+decenzed-node link -l              # + one line per per-protocol connection link
+decenzed-node link -s              # + a sing-box outbound per protocol
 decenzed-node link add alice       # create a client for a friend, print their link
 decenzed-node link remove alice    # revoke a friend
 ```
 In **TLS mode** each client gets **one subscription link** —
 `https://<your-domain>:<port>/sub/<client-id>` — that you paste into a client
 (v2rayN/NG, nekobox, Hiddify, sing-box, …) as a **subscription**. The app fetches
-**every enabled protocol** (VLESS/Trojan/Shadowsocks) from it automatically, and
-picks up changes on refresh. The subscription is served **by the node's own decoy
-website**, behind xray's TLS fallback on your domain — so it needs no extra port
-and looks like an ordinary HTTPS request. (In REALITY mode there's no hosted site,
-so `link` prints the individual per-protocol links instead.) Removing a client
-revokes just that friend. Adding/removing reloads the service automatically.
+**every enabled protocol** (VLESS/Trojan/Shadowsocks) from it automatically, names
+the profile `Decenzed-<node-id>`, and labels each proxy by location+protocol
+(e.g. `RS [VLESS]`); it picks up changes on refresh. The subscription is served
+**by the node's own decoy website**, behind xray's TLS fallback on your domain —
+so it needs no extra port and looks like an ordinary HTTPS request. Use **`-l`**
+to also print each protocol's raw link (to copy individually) or **`-s`** for
+sing-box outbounds. (In REALITY mode there's no hosted subscription, so `link`
+prints the per-protocol links directly.) Adding/removing a client **restarts the
+service** so the change takes effect immediately.
 
 ## 8. Monitor & tune
 ```bash
-decenzed-node stats                # traffic totals, load, run status
-decenzed-node logs                 # daemon log
+decenzed-node stats                # protocols, per-client/per-inbound traffic, status
+decenzed-node logs                 # tail the log (both app and xray)
+decenzed-node logs xray -f         # follow only xray's logs (Ctrl+C to stop)
+decenzed-node debug                # toggle verbose logging (all xray logs)
 decenzed-node config node|xray     # inspect app-config / generated xray JSON
 decenzed-node update               # download the latest release and restart
 ```
-`stats` shows the **enabled protocols** and lifetime traffic broken down two ways:
-**per protocol** (across all clients) and **per client** (across all protocols).
-xray exposes per-user and per-inbound counters separately but not their cross, so
-a full per-protocol-per-client matrix isn't available — these are two independent
-breakdowns.
+`stats` shows the **enabled protocols**, whether **debug mode** is on, and lifetime
+traffic broken down **per protocol** (across all clients) and **per client**
+(across all protocols, with the per-user speed cap noted there — the overall load
+is uncapped). xray exposes per-user and per-inbound counters separately but not
+their cross, so a full per-protocol-per-client matrix isn't available.
+
+**Logs** are one file, each line tagged `app` (the node) or `xray` (the embedded
+core). `logs app`/`logs xray` filter by source; `-f` follows. Runtime **xray
+errors** land here too. `debug` turns on verbose logging (every xray line,
+including debug) until you turn it off; the log is capped at 10 MB (the oldest
+lines are dropped, recent history kept).
+
 **To change any setting, re-run `decenzed-node setup`** — it re-asks every field
 with the current value as the default and rebuilds `xray.json`. You never edit
 xray JSON by hand.

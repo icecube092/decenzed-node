@@ -116,8 +116,8 @@ main() {
 	say "release repo: $REPO ($VERSION)"
 
 	# A private download dir under /tmp (RAM on a router). We remove ONLY this
-	# unique subdir on exit — never /tmp itself — to avoid leaving a ~32 MB copy
-	# of the binary in RAM after we've installed it to $DIR.
+	# unique subdir on exit — never /tmp itself — to avoid leaving a copy of the
+	# binary in RAM after we've installed it to $DIR.
 	TMP=$(mktemp -d 2>/dev/null || echo "/tmp/decenzed.$$")
 	mkdir -p "$TMP"
 	cleanup() { [ -n "${TMP:-}" ] && [ -d "$TMP" ] && rm -rf "$TMP"; }
@@ -138,10 +138,12 @@ main() {
 		fi
 	fi
 
-	# Warn if the install partition is tight (the binary is ~32 MB).
+	# Warn if the install partition is tight. Release binaries are UPX-compressed
+	# to ~10-12 MB on disk (they decompress into RAM at startup, so the router also
+	# needs a little free RAM).
 	avail_kb=$(df -k "$DIR" 2>/dev/null | awk 'NR==2{print $4}')
-	if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt 45000 ]; then
-		say "! only $((avail_kb/1024)) MB free on $DIR — the binary is ~32 MB."
+	if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt 20000 ]; then
+		say "! only $((avail_kb/1024)) MB free on $DIR — the binary is ~10-12 MB (compressed)."
 		say "  If it won't fit, set up extroot/USB and re-run with DIR=/mnt/usb."
 	fi
 

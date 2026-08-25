@@ -13,6 +13,7 @@ import (
 	"decenzed/node_app/internal/config"
 	"decenzed/node_app/internal/domainlist"
 	"decenzed/node_app/internal/duckdns"
+	"decenzed/node_app/internal/nodelog"
 	"decenzed/node_app/internal/nodestats"
 	"decenzed/node_app/internal/site"
 	"decenzed/node_app/internal/throttle"
@@ -39,8 +40,9 @@ func runNode(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if closeLog := setupDaemonLog(path); closeLog != nil {
-		defer closeLog()
+	nl, logErr := nodelog.New(logFilePath(path))
+	if logErr == nil {
+		defer nl.Close()
 	}
 	c, err := config.Load(path)
 	if err != nil {
@@ -62,6 +64,12 @@ func runNode(ctx context.Context) error {
 	}
 
 	rt := xrayrt.NewXray()
+	if logErr == nil {
+		// Capture xray's own logs into the node log (tagged "xray"); verbosity
+		// follows the debug flag.
+		rt.SetLogSink(nl.WriteXray)
+		rt.SetDebug(c.Debug)
+	}
 	xcfg, err := xraygen.Generate(inputFromConfig(c)).JSON()
 	if err != nil {
 		return fmt.Errorf("generate xray config: %w", err)
@@ -190,9 +198,15 @@ func runNode(ctx context.Context) error {
 
 			updateDuckDNS(ctx, c, &lastPublicIP)
 			maybeRenewCert(ctx, c, &lastCertCheck, now)
+			if logErr == nil {
+				nl.Rotate(maxLogBytes) // periodic truncation, off the write path
+			}
 		}
 	}
 }
+
+// maxLogBytes caps the node log file; it is truncated in place once past this.
+const maxLogBytes = 10 << 20 // 10 MiB
 
 // provisionTLS obtains (or renews) the node's Let's Encrypt certificate for TLS
 // camouflage via the DNS-01 challenge, publishing the TXT record through DuckDNS.

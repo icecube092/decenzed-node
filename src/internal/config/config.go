@@ -73,6 +73,10 @@ type AppConfig struct {
 	SS2022Port  int    `json:"ss2022_port,omitempty"`
 	SSServerKey string `json:"ss_server_key,omitempty"`
 
+	// Debug enables verbose logging: all xray logs (including debug) are written
+	// to the log file. When off, only warnings/errors from xray are logged.
+	Debug bool `json:"debug,omitempty"`
+
 	// Policy.
 	MaxUserBps     float64  `json:"max_user_bps"`    // per-user speed cap (bytes/sec); 0 = off
 	BlockProtocols []string `json:"block_protocols"` // e.g. ["bittorrent"]; empty = block nothing
@@ -228,7 +232,7 @@ func (c AppConfig) PublicInbounds() []Inbound {
 // Default returns a config populated with sensible defaults.
 func Default() AppConfig {
 	return AppConfig{
-		Port:           443,
+		Port:           8443, // VLESS default (443 is often taken, e.g. by LuCI)
 		BlockProtocols: []string{"bittorrent"},
 		Autostart:      true,
 		MaxUserBps:     50e6 / 8, // per-user cap: 50 Mbit/s
