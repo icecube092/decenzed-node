@@ -138,12 +138,15 @@ main() {
 		fi
 	fi
 
-	# Warn if the install partition is tight. Release binaries are UPX-compressed
-	# to ~10-12 MB on disk (they decompress into RAM at startup, so the router also
-	# needs a little free RAM).
+	# Report the ACTUAL downloaded binary size and warn if the target partition is
+	# too tight for it (release binaries are UPX-compressed; they decompress into
+	# RAM at startup, so the router also needs a little free RAM).
+	bin_bytes=$(wc -c < "$TMP/decenzed-node" 2>/dev/null | tr -d ' ')
+	bin_kb=$(( ${bin_bytes:-0} / 1024 ))
+	[ "$bin_kb" -gt 0 ] && say "binary size:  ${bin_kb} KB (~$(( bin_kb / 1024 )) MB)"
 	avail_kb=$(df -k "$DIR" 2>/dev/null | awk 'NR==2{print $4}')
-	if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt 20000 ]; then
-		say "! only $((avail_kb/1024)) MB free on $DIR — the binary is ~10-12 MB (compressed)."
+	if [ -n "${avail_kb:-}" ] && [ "$bin_kb" -gt 0 ] && [ "$avail_kb" -lt "$(( bin_kb + 2048 ))" ]; then
+		say "! only $((avail_kb/1024)) MB free on $DIR — the binary needs ~$(( bin_kb/1024 )) MB."
 		say "  If it won't fit, set up extroot/USB and re-run with DIR=/mnt/usb."
 	fi
 

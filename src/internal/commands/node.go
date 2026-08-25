@@ -358,6 +358,7 @@ func inputFromConfig(c config.AppConfig) xraygen.Input {
 		DomainAllow:     eff.Allow,
 		DomainDeny:      eff.Deny,
 		StatsEnabled:    true,
+		Debug:           c.Debug,
 	}
 }
 

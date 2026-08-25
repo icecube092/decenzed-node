@@ -84,7 +84,7 @@ func dispatch(in *input, args []string) error {
 	case "config":
 		return cmdConfig(args[1:])
 	case "update":
-		return cmdUpdate()
+		return cmdUpdate(in)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -222,7 +222,8 @@ Commands:
   service install|uninstall|start|stop|restart|status
                             Manage the background service.
   logs [app|xray] [-f]      Show the log; filter by source; -f to follow.
-  update                    Download the latest version and restart the service.
+  update                    Check for a newer version; if found, ask to install
+                            it, then restart the service and re-launch the CLI.
   version · help · exit
 `)
 }

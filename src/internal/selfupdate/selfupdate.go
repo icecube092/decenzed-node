@@ -61,24 +61,41 @@ func platformKey() string {
 // new binary takes effect on the next (re)start. Returns the new version when an
 // update was applied.
 func CheckAndApply(ctx context.Context, currentVersion, manifestURL string) (applied bool, newVersion string, err error) {
+	available, newVersion, asset, err := Check(ctx, currentVersion, manifestURL)
+	if err != nil || !available {
+		return false, newVersion, err
+	}
+	if err := Apply(ctx, asset); err != nil {
+		return false, newVersion, err
+	}
+	return true, newVersion, nil
+}
+
+// Check fetches the manifest and reports whether it advertises a newer version
+// with an asset for this platform, WITHOUT downloading anything. When available
+// is true, pass the returned asset to Apply to install it.
+func Check(ctx context.Context, currentVersion, manifestURL string) (available bool, newVersion string, asset Asset, err error) {
 	if manifestURL == "" {
-		return false, "", nil
+		return false, "", Asset{}, nil
 	}
 	m, err := fetchManifest(ctx, manifestURL)
 	if err != nil {
-		return false, "", err
+		return false, "", Asset{}, err
 	}
 	if !isNewer(m.Version, currentVersion) {
-		return false, m.Version, nil
+		return false, m.Version, Asset{}, nil
 	}
-	asset, ok := m.Assets[platformKey()]
-	if !ok || asset.URL == "" {
-		return false, m.Version, fmt.Errorf("no update asset for %s", platformKey())
+	a, ok := m.Assets[platformKey()]
+	if !ok || a.URL == "" {
+		return false, m.Version, Asset{}, fmt.Errorf("no update asset for %s", platformKey())
 	}
-	if err := downloadAndApply(ctx, asset); err != nil {
-		return false, m.Version, err
-	}
-	return true, m.Version, nil
+	return true, m.Version, a, nil
+}
+
+// Apply downloads, verifies (SHA-256), and replaces the running binary with the
+// given asset. The new binary takes effect on the next (re)start.
+func Apply(ctx context.Context, a Asset) error {
+	return downloadAndApply(ctx, a)
 }
 
 func fetchManifest(ctx context.Context, url string) (Manifest, error) {

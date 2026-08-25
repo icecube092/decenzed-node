@@ -27,6 +27,7 @@ type Input struct {
 	DomainAllow     []string // if non-empty: allow ONLY these, block the rest
 	DomainDeny      []string // always blocked
 	StatsEnabled    bool     // per-user stats for metering
+	Debug           bool     // verbose xray logging (loglevel "debug" vs "warning")
 }
 
 // InboundSpec describes one listener to generate.
@@ -188,8 +189,12 @@ type policySystem struct {
 //
 // Without an allow-list the default is permissive (allow all except deny/bt).
 func Generate(in Input) *Config {
+	loglevel := "warning"
+	if in.Debug {
+		loglevel = "debug"
+	}
 	cfg := &Config{
-		Log: &logCfg{Loglevel: "warning"},
+		Log: &logCfg{Loglevel: loglevel},
 		Outbounds: []outbound{
 			{Tag: "direct", Protocol: "freedom"},
 			{Tag: "block", Protocol: "blackhole"},

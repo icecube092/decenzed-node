@@ -259,8 +259,13 @@ decenzed-node logs                 # tail the log (both app and xray)
 decenzed-node logs xray -f         # follow only xray's logs (Ctrl+C to stop)
 decenzed-node debug                # toggle verbose logging (all xray logs)
 decenzed-node config node|xray     # inspect app-config / generated xray JSON
-decenzed-node update               # download the latest release and restart
+decenzed-node update               # check for a newer version; ask before installing
 ```
+`update` checks the release manifest and, only if a newer version exists, asks
+**y/n** before downloading. After installing it restarts the background service
+**and re-launches the CLI** so the session runs the new version immediately (the
+running process keeps the old code in memory until it restarts — replacing the
+binary file alone doesn't change an already-running program, on any OS).
 `stats` shows the **enabled protocols**, whether **debug mode** is on, and lifetime
 traffic broken down **per protocol** (across all clients) and **per client**
 (across all protocols, with the per-user speed cap noted there — the overall load
