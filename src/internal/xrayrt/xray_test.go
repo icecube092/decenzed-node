@@ -2,12 +2,25 @@ package xrayrt
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"decenzed/node_app/internal/realitykeys"
+	"decenzed/node_app/internal/xraygen"
 )
 
 func freePort(t *testing.T) int {
@@ -25,8 +38,11 @@ func TestXrayStartStopStats(t *testing.T) {
 	cfg := map[string]any{
 		"log": map[string]any{"loglevel": "none"},
 		"inbounds": []any{map[string]any{
-			"tag": "in", "listen": "127.0.0.1", "port": port, "protocol": "socks",
-			"settings": map[string]any{"udp": false},
+			"tag": "in", "listen": "127.0.0.1", "port": port, "protocol": "shadowsocks",
+			"settings": map[string]any{
+				"clients": []any{map[string]any{"method": "chacha20-ietf-poly1305", "password": "u1", "email": "u1"}},
+				"network": "tcp",
+			},
 		}},
 		"outbounds": []any{map[string]any{"protocol": "freedom", "tag": "direct"}},
 		"stats":     map[string]any{},
@@ -72,6 +88,82 @@ func TestXrayClassicShadowsocksStarts(t *testing.T) {
 	rt := NewXray()
 	require.NoError(t, rt.Start(context.Background(), data), "classic multi-user shadowsocks must start")
 	require.NoError(t, rt.Stop())
+}
+
+// Boots the real generated VLESS+REALITY and Trojan+REALITY inbounds together,
+// proving the curated feature imports (features.go) cover every protocol and
+// transport we ship — a missing registration would fail here with "unknown type".
+func TestXrayVlessTrojanRealityStart(t *testing.T) {
+	kp, err := realitykeys.Generate()
+	require.NoError(t, err)
+	reality := &xraygen.RealitySpec{
+		Dest: "www.microsoft.com:443", Names: []string{"www.microsoft.com"},
+		PrivKey: kp.Private, ShortIDs: []string{"beef"},
+	}
+	in := xraygen.Input{
+		StatsEnabled: true,
+		Inbounds: []xraygen.InboundSpec{
+			{Protocol: "vless", Port: freePort(t), ListenAddr: "127.0.0.1",
+				Clients: []xraygen.ClientCred{{ID: "uuid-1", Email: "uuid-1"}}, Reality: reality},
+			{Protocol: "trojan", Port: freePort(t), ListenAddr: "127.0.0.1",
+				Clients: []xraygen.ClientCred{{Password: "uuid-1", Email: "uuid-1"}}, Reality: reality},
+		},
+	}
+	data, err := xraygen.Generate(in).JSON()
+	require.NoError(t, err)
+
+	rt := NewXray()
+	require.NoError(t, rt.Start(context.Background(), data), "vless/trojan + reality must start")
+	require.NoError(t, rt.Stop())
+}
+
+// Boots the real generated VLESS+TLS inbound with a website fallback — the main
+// production masquerade path — validating the tls transport + fallback wiring
+// under the curated feature imports.
+func TestXrayVlessTLSFallbackStart(t *testing.T) {
+	certPath, keyPath := genCertFiles(t)
+	tls := &xraygen.TLSSpec{
+		ServerName: "example.com", CertFile: certPath, KeyFile: keyPath,
+		FallbackDest: "127.0.0.1:8080",
+	}
+	in := xraygen.Input{
+		Inbounds: []xraygen.InboundSpec{{
+			Protocol: "vless", Port: freePort(t), ListenAddr: "127.0.0.1",
+			Clients: []xraygen.ClientCred{{ID: "uuid-1", Email: "uuid-1"}}, TLS: tls,
+		}},
+	}
+	data, err := xraygen.Generate(in).JSON()
+	require.NoError(t, err)
+
+	rt := NewXray()
+	require.NoError(t, rt.Start(context.Background(), data), "vless + tls + fallback must start")
+	require.NoError(t, rt.Stop())
+}
+
+// genCertFiles writes a throwaway self-signed cert/key pair and returns their
+// paths (xray reads certificateFile/keyFile).
+func genCertFiles(t *testing.T) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "example.com"},
+		DNSNames:     []string{"example.com"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+	require.NoError(t, os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644))
+	require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600))
+	return certPath, keyPath
 }
 
 // Boots BOTH Shadowsocks variants at once (classic + SS-2022) to prove their
