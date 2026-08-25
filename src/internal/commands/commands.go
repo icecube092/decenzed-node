@@ -106,7 +106,6 @@ var interactiveCmds = map[string]bool{"setup": true, "check": true, "debug": tru
 // prompt, is a no-op) instead of exiting; the CLI exits only via 'exit'/'quit'
 // or Ctrl+D.
 func repl(in *input) int {
-	fmt.Println("decenzed-node — self-hosted VLESS proxy")
 	usage()
 
 	sig := make(chan os.Signal, 1)
@@ -201,8 +200,8 @@ func runCommand(in *input, args []string) {
 }
 
 func usage() {
-	fmt.Print(`decenzed-node — run your own proxy, share links with friends
-
+	fmt.Printf("decenzed-node %s — run your own proxy, share links with friends\n", Version)
+	fmt.Print(`
 Run with no arguments for an interactive shell. In the shell, Ctrl+C leaves the
 current command (back to the prompt); quit with 'exit' or Ctrl+D.
 Or run one command: decenzed-node <command>
