@@ -1,6 +1,7 @@
-//go:build windows
-
 package commands
+
+// Constrained to Windows by the _windows.go filename suffix (no build tag or
+// -tags needed).
 
 import (
 	"os"

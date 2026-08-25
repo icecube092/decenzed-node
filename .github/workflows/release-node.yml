@@ -100,10 +100,11 @@ jobs:
               out="decenzed-node-${name}"
               [ "$goos" = "windows" ] && out="${out}.exe"
               sha="$(sha256sum "dist/${out}" | cut -d' ' -f1)"
+              size="$(wc -c < "dist/${out}" | tr -d ' ')"
               url="https://github.com/${DIST_REPO}/releases/download/${TAG}/${out}"
               [ "$first" -eq 0 ] && echo ','
               first=0
-              printf '    "%s": { "url": "%s", "sha256": "%s" }' "$key" "$url" "$sha"
+              printf '    "%s": { "url": "%s", "sha256": "%s", "size": %s }' "$key" "$url" "$sha" "$size"
             done
             echo
             echo '  }'

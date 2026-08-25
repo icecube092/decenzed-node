@@ -34,6 +34,10 @@ func Main() int {
 		return 0
 	}
 
+	// Interactive CLI runs with admin/root by default (re-launches elevated if
+	// not already); skip with DECENZED_NO_ELEVATE=1.
+	maybeElevate()
+
 	in := newInput()
 	if len(os.Args) < 2 {
 		return repl(in)

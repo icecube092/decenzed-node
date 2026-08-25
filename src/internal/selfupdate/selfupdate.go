@@ -27,6 +27,7 @@ import (
 type Asset struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size,omitempty"` // bytes; used for a pre-download space check
 }
 
 // Manifest lists the latest version and its per-platform assets, keyed by
