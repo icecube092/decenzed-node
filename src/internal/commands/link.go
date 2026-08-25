@@ -178,25 +178,47 @@ func linkHost(c config.AppConfig) string {
 	return fetchPublicIP()
 }
 
-// clientLink builds the share link for a client on a specific inbound.
+// clientLink builds the share link for a client on a specific inbound. The
+// link's display name (the #fragment) is location+protocol, e.g. "RS [VLESS]" —
+// so a client importing the subscription sees named, locatable proxies rather
+// than the (shared) client name.
 func clientLink(c config.AppConfig, cl config.Client, host string, ib config.Inbound) string {
+	tag := linkTag(c, ib)
 	switch ib.Protocol {
 	case config.ProtoVLESS:
-		return vlessLink(c, cl, host, ib.Port)
+		return vlessLink(c, cl, host, ib.Port, tag)
 	case config.ProtoTrojan:
-		return trojanLink(c, cl, host, ib.Port)
+		return trojanLink(c, cl, host, ib.Port, tag)
 	case config.ProtoShadowsocks:
-		return ssLink(c, cl, host, ib.Port, ib.Method)
+		return ssLink(c, cl, host, ib.Port, ib.Method, tag)
 	}
 	return ""
 }
 
-// linkName is the fragment/label used in share links for a client.
-func linkName(cl config.Client) string {
-	if cl.Name != "" {
-		return cl.Name
+// linkTag is the display name for a proxy in the client: "<Location> [<Protocol>]"
+// (e.g. "RS [VLESS]"). Location falls back to the node profile name when unset.
+func linkTag(c config.AppConfig, ib config.Inbound) string {
+	loc := c.Location
+	if loc == "" {
+		loc = c.ProfileName()
 	}
-	return "decenzed"
+	return loc + " [" + protoDisplay(ib) + "]"
+}
+
+// protoDisplay is the human-facing protocol name used in proxy tags.
+func protoDisplay(ib config.Inbound) string {
+	switch ib.Protocol {
+	case config.ProtoVLESS:
+		return "VLESS"
+	case config.ProtoTrojan:
+		return "Trojan"
+	case config.ProtoShadowsocks:
+		if config.IsSS2022(ib.Method) {
+			return "SS-2022"
+		}
+		return "Shadowsocks"
+	}
+	return ib.Protocol
 }
 
 // camouflageQuery fills the transport-security parameters common to the VLESS
@@ -219,29 +241,29 @@ func camouflageQuery(c config.AppConfig) url.Values {
 }
 
 // vlessLink builds a vless:// share link (REALITY or TLS) with the Vision flow.
-func vlessLink(c config.AppConfig, cl config.Client, host string, port int) string {
+func vlessLink(c config.AppConfig, cl config.Client, host string, port int, tag string) string {
 	q := camouflageQuery(c)
 	q.Set("encryption", "none")
 	q.Set("flow", "xtls-rprx-vision")
-	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", cl.UUID, host, port, q.Encode(), url.PathEscape(linkName(cl)))
+	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", cl.UUID, host, port, q.Encode(), url.PathEscape(tag))
 }
 
 // trojanLink builds a trojan:// share link (REALITY or TLS). No XTLS flow: Vision
 // is VLESS-only. The Trojan password is the client UUID.
-func trojanLink(c config.AppConfig, cl config.Client, host string, port int) string {
+func trojanLink(c config.AppConfig, cl config.Client, host string, port int, tag string) string {
 	q := camouflageQuery(c)
-	return fmt.Sprintf("trojan://%s@%s:%d?%s#%s", cl.UUID, host, port, q.Encode(), url.PathEscape(linkName(cl)))
+	return fmt.Sprintf("trojan://%s@%s:%d?%s#%s", cl.UUID, host, port, q.Encode(), url.PathEscape(tag))
 }
 
 // ssLink builds a SIP002 ss:// share link. The userinfo is url-safe base64 (no
 // padding) of "method:password". For SS-2022 the password is serverPSK:userPSK;
 // for a classic AEAD cipher it is the client UUID.
-func ssLink(c config.AppConfig, cl config.Client, host string, port int, method string) string {
+func ssLink(c config.AppConfig, cl config.Client, host string, port int, method, tag string) string {
 	password := cl.UUID
 	if config.IsSS2022(method) {
 		password = c.SSServerKey + ":" + config.SSUserPSK(cl.UUID)
 	}
 	userinfo := method + ":" + password
 	enc := base64.RawURLEncoding.EncodeToString([]byte(userinfo))
-	return fmt.Sprintf("ss://%s@%s:%d#%s", enc, host, port, url.PathEscape(linkName(cl)))
+	return fmt.Sprintf("ss://%s@%s:%d#%s", enc, host, port, url.PathEscape(tag))
 }

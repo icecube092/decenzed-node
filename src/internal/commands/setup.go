@@ -27,6 +27,10 @@ func cmdSetup(r *bufio.Reader) error {
 	if err != nil {
 		c = config.Default()
 	}
+	// A stable node id backs the subscription profile name ("Decenzed-<id>").
+	if c.NodeID == "" {
+		c.NodeID = newNodeID()
+	}
 
 	fmt.Println("decenzed-node setup — Enter keeps the [current] value; type 'no' to clear it.")
 
@@ -161,6 +165,13 @@ func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
 			fmt.Println("  ! this looks like a CGNAT/private IP — inbound connections may not")
 			fmt.Println("    reach you; ask your ISP for a public ('white') IP, or use a VPS.")
 		}
+	}
+
+	// Auto-detect the node's country (for the proxy names, e.g. "RS [VLESS]").
+	// Best-effort: if it fails, proxy names fall back to the node label.
+	if loc := detectLocation(); loc != "" {
+		c.Location = loc
+		fmt.Printf("location:          %s (auto-detected)\n", loc)
 	}
 
 	// 2. Warn about forwarding, then pick the port.

@@ -55,7 +55,7 @@ func runNode(ctx context.Context) error {
 		}
 		go func() {
 			log.Printf("site: serving decoy website + subscriptions on %s (xray fallback target)", c.SiteAddr())
-			if err := site.Serve(ctx, c.SiteAddr(), subscriptionFunc(c)); err != nil {
+			if err := site.Serve(ctx, c.SiteAddr(), subscriptionFunc(c), c.ProfileName()); err != nil {
 				log.Println("site server exited:", err)
 			}
 		}()

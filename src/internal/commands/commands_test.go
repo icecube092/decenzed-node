@@ -169,6 +169,7 @@ func TestSelfCheckHostPriority(t *testing.T) {
 func TestLinkFor(t *testing.T) {
 	c := config.AppConfig{
 		Port:              8443,
+		Location:          "RS",
 		RealityServerName: []string{"example.com"},
 		RealityPublicKey:  "PUBKEY",
 		RealityShortIDs:   []string{"beef"},
@@ -182,7 +183,7 @@ func TestLinkFor(t *testing.T) {
 		"pbk=PUBKEY",
 		"sid=beef",
 		"flow=xtls-rprx-vision",
-		"#alice",
+		"#RS%20%5BVLESS%5D", // proxy name = "RS [VLESS]", not the client name
 	} {
 		if !strings.Contains(link, want) {
 			t.Errorf("link %q missing %q", link, want)
@@ -195,6 +196,7 @@ func TestClientLinkTrojanAndSS(t *testing.T) {
 		Port:              443,
 		TrojanPort:        8443,
 		SSPort:            9443,
+		Location:          "RS",
 		SSServerKey:       "c2VydmVya2V5MTIzNDU2",
 		RealityServerName: []string{"example.com"},
 		RealityPublicKey:  "PUBKEY",
@@ -203,7 +205,7 @@ func TestClientLinkTrojanAndSS(t *testing.T) {
 	cl := config.Client{UUID: "uuid-1", Name: "bob"}
 
 	trojan := clientLink(c, cl, "host.example", config.Inbound{Protocol: config.ProtoTrojan, Port: 8443})
-	for _, want := range []string{"trojan://uuid-1@host.example:8443?", "security=reality", "#bob"} {
+	for _, want := range []string{"trojan://uuid-1@host.example:8443?", "security=reality", "#RS%20%5BTrojan%5D"} {
 		if !strings.Contains(trojan, want) {
 			t.Errorf("trojan link %q missing %q", trojan, want)
 		}
@@ -213,12 +215,13 @@ func TestClientLinkTrojanAndSS(t *testing.T) {
 	}
 
 	// Classic Shadowsocks (chacha20-ietf-poly1305): userinfo base64 = method:UUID.
+	ssSuffix := "@host.example:9443#RS%20%5BShadowsocks%5D"
 	ss := clientLink(c, cl, "host.example",
 		config.Inbound{Protocol: config.ProtoShadowsocks, Port: 9443, Method: config.SSMethodClassic})
-	if !strings.HasPrefix(ss, "ss://") || !strings.Contains(ss, "@host.example:9443#bob") {
+	if !strings.HasPrefix(ss, "ss://") || !strings.Contains(ss, ssSuffix) {
 		t.Errorf("unexpected ss link: %q", ss)
 	}
-	if enc := strings.TrimSuffix(strings.TrimPrefix(ss, "ss://"), "@host.example:9443#bob"); enc != "" {
+	if enc := strings.TrimSuffix(strings.TrimPrefix(ss, "ss://"), ssSuffix); enc != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(enc)
 		if err != nil {
 			t.Fatalf("ss userinfo not base64url: %v", err)
@@ -231,7 +234,7 @@ func TestClientLinkTrojanAndSS(t *testing.T) {
 	// SS-2022 variant: userinfo = method:serverPSK:userPSK.
 	ss2022 := clientLink(c, cl, "host.example",
 		config.Inbound{Protocol: config.ProtoShadowsocks, Port: 9444, Method: config.SSMethod2022})
-	enc := strings.TrimSuffix(strings.TrimPrefix(ss2022, "ss://"), "@host.example:9444#bob")
+	enc := strings.TrimSuffix(strings.TrimPrefix(ss2022, "ss://"), "@host.example:9444#RS%20%5BSS-2022%5D")
 	raw, err := base64.RawURLEncoding.DecodeString(enc)
 	if err != nil {
 		t.Fatalf("ss2022 userinfo not base64url: %v", err)
@@ -245,6 +248,7 @@ func TestClientLinkTLSMode(t *testing.T) {
 	c := config.AppConfig{
 		Port:             443,
 		TrojanPort:       8443,
+		Location:         "RS",
 		Camouflage:       config.CamouflageTLSMode,
 		DuckDNSToken:     "tok",
 		DuckDNSSubdomain: "mynode",
@@ -257,7 +261,7 @@ func TestClientLinkTLSMode(t *testing.T) {
 		"security=tls",
 		"sni=mynode.duckdns.org",
 		"flow=xtls-rprx-vision",
-		"#carol",
+		"#RS%20%5BVLESS%5D",
 	} {
 		if !strings.Contains(vless, want) {
 			t.Errorf("vless TLS link %q missing %q", vless, want)

@@ -112,6 +112,50 @@ func fetchPublicIP() string {
 	return ""
 }
 
+// detectLocation best-effort resolves the node's 2-letter country code (e.g.
+// "RS") from a public geo endpoint, used to label proxies in share links.
+// Returns "" on any failure so callers fall back to the node label.
+func detectLocation() string {
+	// Cloudflare's trace includes a "loc=XX" line — HTTPS, no key.
+	if body := httpGetString("https://www.cloudflare.com/cdn-cgi/trace", 1024); body != "" {
+		for _, line := range strings.Split(body, "\n") {
+			if cc, ok := strings.CutPrefix(line, "loc="); ok {
+				if c := normCountry(cc); c != "" {
+					return c
+				}
+			}
+		}
+	}
+	// Fallback: ipinfo returns the code directly.
+	return normCountry(httpGetString("https://ipinfo.io/country", 16))
+}
+
+// httpGetString GETs u and returns the trimmed body (up to limit bytes), or "".
+func httpGetString(u string, limit int64) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
+	return strings.TrimSpace(string(b))
+}
+
+// normCountry upper-cases s and returns it only if it is a 2-letter code.
+func normCountry(s string) string {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	if len(s) == 2 && s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z' {
+		return s
+	}
+	return ""
+}
+
 func isCGNATorPrivate(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {

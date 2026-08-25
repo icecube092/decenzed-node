@@ -15,6 +15,7 @@ package site
 import (
 	"context"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"io"
 	"io/fs"
@@ -41,28 +42,28 @@ type SubFunc func(id string) (body string, ok bool)
 // until ctx is cancelled. addr is either a TCP "host:port" or a unix socket path
 // (absolute path, or "@name" for an abstract socket on Linux). It listens only
 // where xray's fallback dials it — typically 127.0.0.1 or a local socket — never
-// a public interface.
-func Serve(ctx context.Context, addr string, sub SubFunc) error {
+// a public interface. profileTitle names the subscription profile in the client.
+func Serve(ctx context.Context, addr string, sub SubFunc, profileTitle string) error {
 	root, err := fs.Sub(content, "content")
 	if err != nil {
 		return err
 	}
-	return serveFS(ctx, addr, http.FS(root), sub)
+	return serveFS(ctx, addr, http.FS(root), sub, profileTitle)
 }
 
 // ServeDir is like Serve but serves files from dir instead of the embedded site,
 // letting an operator supply their own decoy content.
-func ServeDir(ctx context.Context, addr, dir string, sub SubFunc) error {
-	return serveFS(ctx, addr, http.Dir(dir), sub)
+func ServeDir(ctx context.Context, addr, dir string, sub SubFunc, profileTitle string) error {
+	return serveFS(ctx, addr, http.Dir(dir), sub, profileTitle)
 }
 
-func serveFS(ctx context.Context, addr string, root http.FileSystem, sub SubFunc) error {
+func serveFS(ctx context.Context, addr string, root http.FileSystem, sub SubFunc, profileTitle string) error {
 	ln, err := listen(addr)
 	if err != nil {
 		return err
 	}
 	mux := http.NewServeMux()
-	files := http.FileServer(root)
+	files := http.FileServer(hardenedFS{root})
 	if sub != nil {
 		mux.HandleFunc(SubPath, func(w http.ResponseWriter, r *http.Request) {
 			id := strings.TrimPrefix(r.URL.Path, SubPath)
@@ -71,7 +72,14 @@ func serveFS(ctx context.Context, addr string, root http.FileSystem, sub SubFunc
 				http.NotFound(w, r) // unknown id: ordinary 404, no info leak
 				return
 			}
-			// Header some clients read to name/refresh the subscription.
+			// Headers clients read to name and refresh the subscription profile.
+			// Profile-Title carries the display name (base64 form is the widely
+			// supported one); Content-Disposition names it for clients that use
+			// the filename instead.
+			if profileTitle != "" {
+				w.Header().Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(profileTitle)))
+				w.Header().Set("Content-Disposition", `attachment; filename="`+profileTitle+`"`)
+			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Profile-Update-Interval", "12")
 			_, _ = io.WriteString(w, body)
@@ -93,6 +101,45 @@ func serveFS(ctx context.Context, addr string, root http.FileSystem, sub SubFunc
 		return err
 	}
 	return nil
+}
+
+// hardenedFS wraps an http.FileSystem to make the decoy site behave like an
+// ordinary website and add defense-in-depth even when serving a real directory
+// (ServeDir): it hides dot-files and refuses to list directories that have no
+// index.html (http.FileServer would otherwise render a browsable listing). The
+// embedded content is already safe on its own — this hardens the ServeDir path
+// and blocks directory enumeration.
+type hardenedFS struct{ fs http.FileSystem }
+
+func (h hardenedFS) Open(name string) (http.File, error) {
+	// Reject any path element starting with "." (dot-files, and "."/".." as a
+	// belt-and-suspenders traversal guard on top of http.FileServer's cleaning).
+	for _, part := range strings.Split(name, "/") {
+		if strings.HasPrefix(part, ".") {
+			return nil, fs.ErrNotExist
+		}
+	}
+	f, err := h.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		// Only allow a directory if it has an index.html to serve; otherwise hide
+		// it entirely (no listing).
+		index := strings.TrimSuffix(name, "/") + "/index.html"
+		idx, ierr := h.fs.Open(index)
+		if ierr != nil {
+			_ = f.Close()
+			return nil, fs.ErrNotExist
+		}
+		_ = idx.Close()
+	}
+	return f, nil
 }
 
 // listen opens a TCP or unix listener depending on the shape of addr. A path

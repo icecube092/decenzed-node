@@ -51,6 +51,11 @@ type AppConfig struct {
 	Port     int    `json:"port"`      // VLESS+REALITY inbound TCP port (forward this on your router)
 	PublicIP string `json:"public_ip"` // used in share links when DuckDNS is off; auto-detected if empty
 
+	// Location is a short label shown in each proxy's name in the client (e.g. the
+	// country code "RS"). It is auto-detected from the public IP at setup; proxy
+	// names render as "<Location> [<Protocol>]".
+	Location string `json:"location,omitempty"`
+
 	// Extra protocols (optional). Each runs as its own xray inbound on its own
 	// port — one port can host only one protocol, so every enabled protocol
 	// needs its own forwarded TCP port. A 0 port means the protocol is disabled.
@@ -228,6 +233,15 @@ func Default() AppConfig {
 		Autostart:      true,
 		MaxUserBps:     50e6 / 8, // per-user cap: 50 Mbit/s
 	}
+}
+
+// ProfileName is the title clients show for the subscription profile:
+// "Decenzed-<NodeID>", or just "Decenzed" if no NodeID is set.
+func (c AppConfig) ProfileName() string {
+	if c.NodeID != "" {
+		return "Decenzed-" + c.NodeID
+	}
+	return "Decenzed"
 }
 
 // DuckDNSDomain is the subdomain label (without ".duckdns.org"): the label you
