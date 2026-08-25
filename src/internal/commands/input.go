@@ -3,9 +3,11 @@ package commands
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync"
+	"time"
 )
 
 // Control-flow sentinels raised (via panic) from a blocked stdin read so a
@@ -46,13 +48,23 @@ func newInputFrom(r io.Reader) *input {
 func (in *input) loop(r *bufio.Reader) {
 	for {
 		line, err := r.ReadString('\n')
-		if len(line) > 0 {
+		if err == nil {
 			in.lines <- line
+			continue
 		}
-		if err != nil {
+		// Only a real end-of-input (Ctrl+D / closed pipe) ends reading.
+		if errors.Is(err, io.EOF) {
+			if len(line) > 0 {
+				in.lines <- line // final line without a trailing newline
+			}
 			close(in.eof)
 			return
 		}
+		// Other errors — notably on Windows, where Ctrl+C aborts the pending
+		// console read — must NOT be treated as end-of-input (that would quit the
+		// CLI). Discard any partial line and retry; the signal handler deals with
+		// the Ctrl+C itself. A short sleep avoids a busy loop if it ever persists.
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

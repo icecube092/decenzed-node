@@ -62,18 +62,19 @@ func (x *XrayRuntime) Start(_ context.Context, configJSON []byte) error {
 	if err != nil {
 		return fmt.Errorf("xray: new instance: %w", err)
 	}
+	// core.New built xray's app/log, which registered its own log handler. Override
+	// it BEFORE Start so we capture every xray log line — including startup banners
+	// and any startup errors — into the node's log file instead of the console.
+	// Re-done on each (re)start because a fresh app/log re-registers.
+	if x.sink != nil {
+		xlog.RegisterHandler(xrayLogHandler{x})
+	}
 	if err := inst.Start(); err != nil {
 		return fmt.Errorf("xray: start: %w", err)
 	}
 	x.inst = inst
 	if m, ok := inst.GetFeature(stats.ManagerType()).(stats.Manager); ok {
 		x.statsMgr = m
-	}
-	// xray's app/log registered its own handler during Start; override it so we
-	// capture every xray log line into the node's log file. Re-done on each
-	// (re)start because a fresh app/log re-registers.
-	if x.sink != nil {
-		xlog.RegisterHandler(xrayLogHandler{x})
 	}
 	return nil
 }

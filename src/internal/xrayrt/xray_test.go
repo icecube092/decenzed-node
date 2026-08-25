@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +89,45 @@ func TestXrayClassicShadowsocksStarts(t *testing.T) {
 	rt := NewXray()
 	require.NoError(t, rt.Start(context.Background(), data), "classic multi-user shadowsocks must start")
 	require.NoError(t, rt.Stop())
+}
+
+// Verifies the node captures xray-core's own logs: with a sink installed and
+// debug on, starting xray produces at least one captured line.
+func TestXrayLogCapture(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	rt := NewXray()
+	rt.SetLogSink(func(level, text string) {
+		mu.Lock()
+		lines = append(lines, level+"\t"+text)
+		mu.Unlock()
+	})
+	rt.SetDebug(true)
+
+	port := freePort(t)
+	cfg := map[string]any{
+		"log": map[string]any{"loglevel": "warning"},
+		"inbounds": []any{map[string]any{
+			"tag": "ss-in", "listen": "127.0.0.1", "port": port, "protocol": "shadowsocks",
+			"settings": map[string]any{
+				"clients": []any{map[string]any{"method": "chacha20-ietf-poly1305", "password": "u1", "email": "u1"}},
+				"network": "tcp",
+			},
+		}},
+		"outbounds": []any{map[string]any{"protocol": "freedom", "tag": "direct"}},
+	}
+	data, _ := json.Marshal(cfg)
+	require.NoError(t, rt.Start(context.Background(), data))
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, rt.Stop())
+
+	mu.Lock()
+	n := len(lines)
+	mu.Unlock()
+	if n == 0 {
+		t.Fatal("no xray log lines were captured — the log handler is not wired up")
+	}
+	t.Logf("captured %d xray log line(s); first: %q", n, lines[0])
 }
 
 // Boots the real generated VLESS+REALITY and Trojan+REALITY inbounds together,
