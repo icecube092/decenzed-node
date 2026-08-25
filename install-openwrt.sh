@@ -5,7 +5,8 @@
 # prebuilt binary from the latest GitHub release, verifies its SHA-256 against
 # the release manifest, installs it, and puts `decenzed-node` on your PATH.
 # It does NOT configure the proxy — after it finishes you run `decenzed-node
-# setup`, which runs a network check, generates keys, and (as its last step)
+# setup`, which runs a network check, picks a camouflage mode (REALITY, or TLS
+# behind your own website with a Let's Encrypt cert), and (as its last step)
 # installs the boot service for you.
 #
 # Usage (on the router, as root):
@@ -156,8 +157,8 @@ main() {
 	say "on PATH as: decenzed-node"
 	say ""
 	say "next steps:"
-	say "  1. decenzed-node setup   # network check + port 8443 + REALITY + keys, then"
-	say "                           # installs the boot service (procd) as its last step"
+	say "  1. decenzed-node setup   # network check + port 8443 + camouflage (REALITY or"
+	say "                           # your own TLS site), then installs the boot service (procd)"
 	say "  2. decenzed-node link    # print the share link for your phone/friends"
 	say ""
 	say "  later: decenzed-node check   # re-verify the RUNNING node is reachable from outside"
@@ -167,8 +168,14 @@ main() {
 	say "  - Port 443 is used by LuCI — keep the default 8443 in setup. If you choose a"
 	say "    different port, re-run this installer with PORT=<port> to update the firewall"
 	say "    (or edit the 'Allow-decenzed-node' rule in LuCI → Firewall → Traffic Rules)."
+	say "  - One TCP port hosts ONE protocol. If you enable Trojan and/or Shadowsocks in"
+	say "    setup, each needs its OWN port — open them all here by re-running with a list,"
+	say "    e.g. PORT=\"8443 8444 9443\" (space- or comma-separated)."
 	say "  - The WAN firewall was opened for TCP $PORT on THIS router. If the node sits"
 	say "    behind another router/ISP box, also port-forward TCP $PORT there to this router."
+	say "  - TLS camouflage (masquerade behind your own site) needs a DuckDNS domain and"
+	say "    only OUTBOUND HTTPS for the Let's Encrypt DNS-01 challenge — no extra inbound"
+	say "    port to open (the site is served through xray on TCP $PORT)."
 }
 
 main "$@"

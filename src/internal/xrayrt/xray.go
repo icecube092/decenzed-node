@@ -24,6 +24,7 @@ type XrayRuntime struct {
 	inst     *core.Instance
 	statsMgr stats.Manager
 	uuids    []string // users to query stats for (see Stats)
+	tags     []string // inbound tags to query stats for (see InboundStats)
 }
 
 // NewXray returns a not-yet-started runtime.
@@ -98,6 +99,39 @@ func (x *XrayRuntime) Stats() (traffic.Snapshot, error) {
 		out[id] = traffic.Counter{Up: up, Down: down}
 	}
 	return out, nil
+}
+
+// InboundStats reads per-inbound cumulative counters for the tracked tags.
+//
+// xray names inbound traffic counters "inbound>>>{tag}>>>traffic>>>{uplink|
+// downlink}" (enabled by the system stats policy). These aggregate ALL users on
+// that inbound — xray does not expose a per-inbound-per-user cross, so a full
+// protocol×client matrix is not available from the core.
+func (x *XrayRuntime) InboundStats() (traffic.Snapshot, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+
+	out := traffic.Snapshot{}
+	if x.statsMgr == nil {
+		return out, nil
+	}
+	for _, tag := range x.tags {
+		up := counterValue(x.statsMgr, "inbound>>>"+tag+">>>traffic>>>uplink")
+		down := counterValue(x.statsMgr, "inbound>>>"+tag+">>>traffic>>>downlink")
+		if up == 0 && down == 0 {
+			continue
+		}
+		out[tag] = traffic.Counter{Up: up, Down: down}
+	}
+	return out, nil
+}
+
+// SetInboundTags records which inbound tags to track for per-inbound stats.
+func (x *XrayRuntime) SetInboundTags(tags []string) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.tags = append([]string(nil), tags...)
+	return nil
 }
 
 func counterValue(m stats.Manager, name string) uint64 {

@@ -3,8 +3,10 @@ package commands
 import (
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
+	"decenzed/node_app/internal/config"
 	"decenzed/node_app/internal/nodestats"
 )
 
@@ -31,11 +33,99 @@ func cmdStats() error {
 	}
 	fmt.Printf("data feed:       %s\n", freshness)
 
+	// Enabled protocols (from the saved config, if present).
+	c, cfgErr := loadConfig()
+	if cfgErr == nil {
+		fmt.Printf("protocols:       %s\n", enabledProtocolsLine(c))
+	}
+
 	fmt.Println("traffic (up+down):")
 	fmt.Printf("  lifetime:      up %s / down %s  (total %s)\n",
 		humanBytes(st.TotalUp), humanBytes(st.TotalDown), humanBytes(st.TotalUp+st.TotalDown))
 	fmt.Printf("  load (10 min): %s\n", loadLine(st))
+
+	if cfgErr == nil {
+		printPerInbound(c, st)
+		printPerClient(c, st)
+	}
 	return nil
+}
+
+// enabledProtocolsLine lists the node's enabled inbounds as "label:port".
+func enabledProtocolsLine(c config.AppConfig) string {
+	ibs := c.PublicInbounds()
+	if len(ibs) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, 0, len(ibs))
+	for _, ib := range ibs {
+		parts = append(parts, fmt.Sprintf("%s:%d", protoLabel(ib), ib.Port))
+	}
+	return joinComma(parts)
+}
+
+// printPerInbound shows lifetime traffic per protocol (across all clients). xray
+// counts per-inbound and per-user separately, so this is a per-protocol total,
+// not a per-protocol-per-client breakdown.
+func printPerInbound(c config.AppConfig, st nodestats.Snapshot) {
+	if len(st.PerInbound) == 0 {
+		return
+	}
+	fmt.Println("per protocol (up+down):")
+	for _, ib := range c.PublicInbounds() {
+		label := protoLabel(ib)
+		d := st.PerInbound[label]
+		fmt.Printf("  %-14s %s  (up %s / down %s)\n",
+			label+":", humanBytes(d.Total()), humanBytes(d.Up), humanBytes(d.Down))
+	}
+}
+
+// printPerClient shows lifetime traffic per client (across all protocols they
+// used), most traffic first. Names come from the config; unnamed clients show a
+// short UUID prefix.
+func printPerClient(c config.AppConfig, st nodestats.Snapshot) {
+	if len(st.PerClient) == 0 {
+		return
+	}
+	name := map[string]string{}
+	for _, cl := range c.Clients {
+		n := cl.Name
+		if n == "" {
+			n = cl.UUID[:8]
+		}
+		name[cl.UUID] = n
+	}
+	type row struct {
+		label string
+		d     nodestats.DirBytes
+	}
+	rows := make([]row, 0, len(st.PerClient))
+	for uuid, d := range st.PerClient {
+		label, ok := name[uuid]
+		if !ok {
+			label = uuid[:8] // a client removed since it last used traffic
+		}
+		rows = append(rows, row{label, d})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].d.Total() > rows[j].d.Total() })
+
+	fmt.Println("per client (up+down):")
+	for _, r := range rows {
+		fmt.Printf("  %-14s %s  (up %s / down %s)\n",
+			r.label+":", humanBytes(r.d.Total()), humanBytes(r.d.Up), humanBytes(r.d.Down))
+	}
+}
+
+// joinComma joins parts with ", ".
+func joinComma(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += ", "
+		}
+		out += p
+	}
+	return out
 }
 
 func runStatus(st nodestats.Snapshot) string {

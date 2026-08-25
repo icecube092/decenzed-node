@@ -4,11 +4,23 @@
 [![version](https://img.shields.io/github/v/release/icecube092/decenzed-node?sort=semver)](https://github.com/icecube092/decenzed-node/releases)
 [![license](https://img.shields.io/github/license/icecube092/decenzed-node)](LICENSE)
 
-`decenzed-node` is a **standalone** VLESS + REALITY proxy server you run on your
-own machine (Windows, macOS, Linux). It scans for a camouflage domain, generates
-its own REALITY keys, runs an embedded xray-core, and prints **share links** you
-hand to friends. There is **no coordination server** — it's fully self-contained
-and open source.
+`decenzed-node` is a **standalone** VLESS proxy server you run on your own machine
+(Windows, macOS, Linux). It runs an embedded xray-core and prints **share links**
+you hand to friends. There is **no coordination server** — it's fully
+self-contained and open source.
+
+It offers **two camouflage modes** for VLESS/Trojan (you pick one in `setup`):
+- **REALITY** (default) — scans for a live third-party TLS 1.3 + HTTP/2 site to
+  borrow as cover and generates its own REALITY keys. No domain or certificate of
+  your own required.
+- **TLS + your own website** — masquerades behind **your own domain**. The website
+  is **raised automatically by the node** — you don't create or host anything
+  yourself: it serves a small built-in site, obtains a **Let's Encrypt**
+  certificate automatically (DNS-01 via DuckDNS, so no port 80 needed), and xray
+  falls back to that site on any non-proxy traffic. To a probe or a stray browser
+  the node is just an ordinary HTTPS website on your domain. The **same domain**
+  doubles as your dynamic-DNS host and the certificate/website host — that's by
+  design, nothing separate to set up. Needs a DuckDNS domain.
 
 ## 1. Requirements
 - A **public IP** (static or dynamic). If the machine is on a home LAN, forward
@@ -18,7 +30,10 @@ and open source.
   machine a **fixed LAN IP via a DHCP reservation** (bind its MAC to one address
   in your router's DHCP settings). Otherwise its LAN IP can change on reboot/lease
   renewal and your port-forward will silently point at the wrong device.
-- Open/forward one TCP port (default **443**; you can pick **8443**).
+- Open/forward one TCP port for VLESS (default **443**; you can pick **8443**).
+  **One TCP port hosts exactly one protocol** — if you also enable **Trojan**
+  and/or **Shadowsocks**, each needs its **own additional** forwarded/opened TCP
+  port (e.g. VLESS 8443, Trojan 8444, Shadowsocks 9443).
 - Admin/root rights only to install the background **service**.
 
 ## 2. Get the binary
@@ -43,8 +58,8 @@ wget -O - https://github.com/icecube092/decenzed-node/releases/latest/download/i
 Then, on the router:
 
 ```sh
-decenzed-node setup   # network check + port 8443 (443 is taken by LuCI) + REALITY + keys,
-                      # then installs the procd boot service as its last step
+decenzed-node setup   # network check + port 8443 (443 is taken by LuCI) + camouflage
+                      # (REALITY or your own TLS site), then installs the procd boot service
 decenzed-node link    # the vless:// link to paste into your client
 # later: decenzed-node check   # re-verify the RUNNING node is reachable from outside
 ```
@@ -82,15 +97,29 @@ detects CGNAT/private IPs and warns you.
 
 ### Extra protocols (Trojan / Shadowsocks)
 
-VLESS+REALITY is always on. `setup` also lets you optionally enable **Trojan**
-(same REALITY camouflage, no XTLS flow) and **Shadowsocks-2022**
-(`2022-blake3-aes-128-gcm`, no TLS masking — a distinct, less-stealthy traffic
-type). One TCP port hosts one protocol, so each enabled protocol needs its **own
-forwarded port**. `decenzed-node link` prints a share link + sing-box outbound
-for every enabled protocol, per client. Per-user speed caps and traffic stats
-apply across all of them (each client is metered by a single identity regardless
-of which protocol it connects with). On OpenWRT open the extra WAN ports with
-`PORT="8443 9443" ./install-openwrt.sh` (space- or comma-separated).
+VLESS is always on. `setup` asks a separate **y/n** question for each optional
+protocol:
+- **Trojan** — shares VLESS's camouflage (REALITY, or TLS with a fallback to your
+  website; no XTLS flow).
+- **Shadowsocks** — classic `chacha20-ietf-poly1305`, multi-user. The broadest
+  client support; no TLS/REALITY masking (a distinct, less-stealthy traffic type).
+- **Shadowsocks-2022** — `2022-blake3-aes-128-gcm`, stronger, but **many clients
+  reject it**, so it's offered as a **separate** inbound/port for the clients that
+  do accept it. (If a client won't import your Shadowsocks entry, use the classic
+  one — or VLESS/Trojan.)
+
+If you answer yes, setup asks for that protocol's **port**, pre-filled with a
+**random free** port from a recommended range (Trojan `32000–35000`, Shadowsocks
+`35000–38000`); on a re-run your **saved** port is offered as the default, even if
+it's currently in use. VLESS keeps `8443`.
+
+**One TCP port hosts one protocol**, so each enabled protocol needs its **own
+forwarded/opened port**. `decenzed-node link` prints one **subscription link** per
+client (TLS mode) covering every enabled protocol. Per-user speed caps and traffic
+stats apply across all of them (each client is metered by a single identity
+regardless of which protocol it connects with). On OpenWRT open the extra WAN ports
+by re-running the installer with the full list, e.g.
+`PORT="8443 33001 36001 36002" ./install-openwrt.sh` (space- or comma-separated).
 
 ### Supported architectures
 
@@ -156,10 +185,23 @@ Then it asks the policy questions — press **Enter** to keep the value shown in
 - **Public IP** for share links (`no` = auto-detect each time; only asked when
   DuckDNS is off).
 
-It then **scans for a REALITY camouflage domain** (a live TLS 1.3 + HTTP/2 site
-near you), **generates your REALITY keypair**, creates your first client, writes
-the xray config, and — as its **final step** — offers to **install & start the
-boot service** (needs admin/root). It prints your first share link at the end.
+Then it asks for the **camouflage mode** (`reality` or `tls`):
+- **`reality`** — scans for a REALITY camouflage domain (a live TLS 1.3 + HTTP/2
+  site near you) and generates your REALITY keypair.
+- **`tls`** — masquerade behind your own website (requires a DuckDNS domain,
+  configured just above). It asks the **Let's Encrypt account details**: a contact
+  email and acceptance of the Subscriber Agreement, then obtains the certificate
+  right away over DNS-01 (so a misconfiguration fails now, not at first start).
+  No domain scan is done in this mode.
+
+It then creates your first client, writes the xray config, and — as its **final
+step** — offers to **install & start the boot service** (needs admin/root). It
+prints your first share link at the end.
+
+> **Testing the TLS mode.** The staging-vs-production Let's Encrypt CA is fixed at
+> **build time**. Normal binaries use production; build a test binary with the
+> Let's Encrypt **staging** CA (untrusted certs, far higher rate limits) via
+> `make build-test` / `make build-test-win`, or `go build -tags staging`.
 
 ## 5. Check a running node
 ```bash
@@ -167,12 +209,12 @@ decenzed-node check
 ```
 Run this once the node is up (setup installs the service for you). It shows your
 public IP, runs a speed test, refreshes your DuckDNS record, and dials **back to
-your own domain/IP** on the node port to confirm the **running service** is
-reachable from outside. If the self-check passes it stops there; if it can't
-confirm reachability it prints **port-forward** instructions to fix. (A serving
-machine mostly uploads, so ≥10 Mbit/s upload is recommended; the loopback
-self-check may fail from inside your own LAN even when forwarding is correct —
-test from mobile data to be sure.)
+your own domain/IP** on **every enabled protocol's port** to confirm the **running
+service** is reachable from outside; disabled protocols are reported as such. If a
+port isn't reachable it prints **port-forward** instructions (listing the ports to
+open). (A serving machine mostly uploads, so ≥10 Mbit/s upload is recommended; the
+loopback self-check may fail from inside your own LAN even when forwarding is
+correct — test from mobile data to be sure.)
 
 ## 6. Background service
 `setup` already installs and starts the boot service on its last step. To manage
@@ -186,13 +228,19 @@ Or run in the foreground for a quick test: `decenzed-node start`.
 
 ## 7. Share with friends — the `link` command
 ```bash
-decenzed-node link                 # print share links for all clients
+decenzed-node link                 # print the subscription link for all clients
 decenzed-node link add alice       # create a client for a friend, print their link
 decenzed-node link remove alice    # revoke a friend
 ```
-Each client is a separate `vless://…` link (paste into nekobox, v2rayN/NG,
-Hiddify, sing-box, …). Removing a client revokes just that friend. Adding/removing
-reloads the service automatically.
+In **TLS mode** each client gets **one subscription link** —
+`https://<your-domain>:<port>/sub/<client-id>` — that you paste into a client
+(v2rayN/NG, nekobox, Hiddify, sing-box, …) as a **subscription**. The app fetches
+**every enabled protocol** (VLESS/Trojan/Shadowsocks) from it automatically, and
+picks up changes on refresh. The subscription is served **by the node's own decoy
+website**, behind xray's TLS fallback on your domain — so it needs no extra port
+and looks like an ordinary HTTPS request. (In REALITY mode there's no hosted site,
+so `link` prints the individual per-protocol links instead.) Removing a client
+revokes just that friend. Adding/removing reloads the service automatically.
 
 ## 8. Monitor & tune
 ```bash
@@ -201,6 +249,11 @@ decenzed-node logs                 # daemon log
 decenzed-node config node|xray     # inspect app-config / generated xray JSON
 decenzed-node update               # download the latest release and restart
 ```
+`stats` shows the **enabled protocols** and lifetime traffic broken down two ways:
+**per protocol** (across all clients) and **per client** (across all protocols).
+xray exposes per-user and per-inbound counters separately but not their cross, so
+a full per-protocol-per-client matrix isn't available — these are two independent
+breakdowns.
 **To change any setting, re-run `decenzed-node setup`** — it re-asks every field
 with the current value as the default and rebuilds `xray.json`. You never edit
 xray JSON by hand.
@@ -210,6 +263,12 @@ xray JSON by hand.
   (keyed by client source IP) — application-level, no OS/tc config.
 - Data lives next to the binary in `decenzed-data/` so the CLI and the service
   (which may run as a different user) share the same files.
+- **TLS mode** stores the Let's Encrypt certificate, key, and ACME account key in
+  `decenzed-data/` (`cert.pem`, `key.pem`, `account.key`). The node renews the
+  certificate automatically (checked daily, renewed ~30 days before expiry) and
+  xray hot-reloads it with **no restart** and no dropped connections. The built-in
+  decoy website serves on `127.0.0.1` and is reachable only through xray's TLS
+  fallback, never directly.
 - Uninstall the service: `decenzed-node service uninstall`.
 
 ## License

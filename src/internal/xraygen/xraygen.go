@@ -11,7 +11,10 @@
 // across whichever protocol(s) that user connects with.
 package xraygen
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Input is the subset of app-config relevant to xray generation.
 type Input struct {
@@ -33,8 +36,14 @@ type InboundSpec struct {
 	ListenAddr string       // "" = all interfaces; "127.0.0.1" when behind the throttle proxy
 	Clients    []ClientCred // per-user credentials
 
-	// REALITY camouflage — set for VLESS/Trojan, nil for Shadowsocks.
+	// REALITY camouflage — set for VLESS/Trojan when Camouflage=reality.
+	// Mutually exclusive with TLS.
 	Reality *RealitySpec
+
+	// TLS camouflage — set for VLESS/Trojan when Camouflage=tls: the node
+	// terminates real TLS (Let's Encrypt cert) and falls back to its own website.
+	// Mutually exclusive with Reality; nil for Shadowsocks.
+	TLS *TLSSpec
 
 	// Shadowsocks-2022 only.
 	SSMethod    string
@@ -58,6 +67,21 @@ type RealitySpec struct {
 	Names    []string // serverNames the node impersonates
 	PrivKey  string
 	ShortIDs []string
+}
+
+// TLSSpec carries the real-TLS camouflage parameters shared by the VLESS/Trojan
+// inbounds when the node masquerades behind its own website. The inbound
+// terminates TLS with a real (Let's Encrypt) certificate and, on any non-proxy
+// or bad-credential traffic, falls back to the local site at FallbackDest.
+//
+// CertFile/KeyFile MUST be file paths (not inline PEM) so xray-core hot-reloads
+// them on renewal without a restart (transport/internet/tls setupOcspTicker,
+// hourly). Do not enable oneTimeLoading.
+type TLSSpec struct {
+	ServerName   string // the node's own domain (cert CN/SAN)
+	CertFile     string // path to fullchain PEM
+	KeyFile      string // path to private key PEM
+	FallbackDest string // "127.0.0.1:8080" or a unix socket path
 }
 
 // ---- xray-core config schema (minimal subset) ----
@@ -89,6 +113,7 @@ type streamSettings struct {
 	Network         string           `json:"network"`
 	Security        string           `json:"security"`
 	RealitySettings *realitySettings `json:"realitySettings,omitempty"`
+	TLSSettings     *tlsSettings     `json:"tlsSettings,omitempty"`
 }
 
 type realitySettings struct {
@@ -97,6 +122,18 @@ type realitySettings struct {
 	ServerNames []string `json:"serverNames"`
 	PrivateKey  string   `json:"privateKey"`
 	ShortIds    []string `json:"shortIds"`
+}
+
+type tlsSettings struct {
+	ServerName   string        `json:"serverName,omitempty"`
+	ALPN         []string      `json:"alpn,omitempty"`
+	Certificates []certificate `json:"certificates"`
+}
+
+// certificate uses file paths (not inline PEM) so xray hot-reloads on renewal.
+type certificate struct {
+	CertificateFile string `json:"certificateFile"`
+	KeyFile         string `json:"keyFile"`
 }
 
 type sniffing struct {
@@ -191,16 +228,28 @@ func Generate(in Input) *Config {
 // buildInbound renders one protocol listener. Sniffing is enabled on every
 // inbound so routing can match the real protocol/destination even though the
 // client tunnels it — required to block bittorrent and to apply domain rules.
+// InboundTag is the stable xray inbound tag for a protocol (and, for
+// Shadowsocks, its cipher variant). Tags MUST be unique across inbounds, so the
+// two Shadowsocks variants differ by a "2022" suffix. xray's per-inbound stats
+// counters key off these tags ("inbound>>>{tag}>>>traffic>>>...").
+func InboundTag(protocol, ssMethod string) string {
+	if protocol == "shadowsocks" && strings.HasPrefix(ssMethod, "2022-") {
+		return "shadowsocks2022-in"
+	}
+	return protocol + "-in"
+}
+
 func buildInbound(spec InboundSpec) inbound {
 	ib := inbound{
-		Tag:      spec.Protocol + "-in",
+		Tag:      InboundTag(spec.Protocol, spec.SSMethod),
 		Listen:   spec.ListenAddr,
 		Port:     spec.Port,
 		Protocol: spec.Protocol,
 		Settings: buildSettings(spec),
 		Sniffing: &sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}},
 	}
-	if spec.Reality != nil {
+	switch {
+	case spec.Reality != nil:
 		ib.StreamSettings = &streamSettings{
 			Network:  "tcp",
 			Security: "reality",
@@ -209,6 +258,20 @@ func buildInbound(spec InboundSpec) inbound {
 				ServerNames: spec.Reality.Names,
 				PrivateKey:  spec.Reality.PrivKey,
 				ShortIds:    spec.Reality.ShortIDs,
+			},
+		}
+	case spec.TLS != nil:
+		// alpn MUST be set when fallbacks have child elements, and the local site
+		// speaks HTTP/1.1 (see xtls fallback docs).
+		ib.StreamSettings = &streamSettings{
+			Network:  "tcp",
+			Security: "tls",
+			TLSSettings: &tlsSettings{
+				ServerName: spec.TLS.ServerName,
+				ALPN:       []string{"http/1.1"},
+				Certificates: []certificate{
+					{CertificateFile: spec.TLS.CertFile, KeyFile: spec.TLS.KeyFile},
+				},
 			},
 		}
 	}
@@ -227,22 +290,47 @@ func buildSettings(spec InboundSpec) json.RawMessage {
 			clients = append(clients, map[string]any{"id": cl.ID, "flow": "xtls-rprx-vision", "email": cl.Email})
 		}
 		m = map[string]any{"clients": clients, "decryption": "none"}
+		addFallback(m, spec.TLS)
 	case "trojan":
-		// Trojan has no XTLS flow (Vision is VLESS-only); it rides REALITY plain.
+		// Trojan has no XTLS flow (Vision is VLESS-only); it rides REALITY plain
+		// or real TLS. In TLS mode it falls back to the local website (Trojan's
+		// original design), same as VLESS.
 		clients := make([]map[string]any, 0, len(spec.Clients))
 		for _, cl := range spec.Clients {
 			clients = append(clients, map[string]any{"password": cl.Password, "email": cl.Email})
 		}
 		m = map[string]any{"clients": clients}
+		addFallback(m, spec.TLS)
 	case "shadowsocks":
 		clients := make([]map[string]any, 0, len(spec.Clients))
-		for _, cl := range spec.Clients {
-			clients = append(clients, map[string]any{"password": cl.Password, "email": cl.Email})
+		if strings.HasPrefix(spec.SSMethod, "2022-") {
+			// SS-2022 multi-user: server-wide key + per-user PSK on each client.
+			for _, cl := range spec.Clients {
+				clients = append(clients, map[string]any{"password": cl.Password, "email": cl.Email})
+			}
+			m = map[string]any{"method": spec.SSMethod, "password": spec.SSServerKey, "clients": clients, "network": "tcp,udp"}
+		} else {
+			// Classic AEAD multi-user: each client carries its own method+password
+			// (xray reads the cipher per client for non-2022 ciphers).
+			for _, cl := range spec.Clients {
+				clients = append(clients, map[string]any{"method": spec.SSMethod, "password": cl.Password, "email": cl.Email})
+			}
+			m = map[string]any{"clients": clients, "network": "tcp,udp"}
 		}
-		m = map[string]any{"method": spec.SSMethod, "password": spec.SSServerKey, "clients": clients, "network": "tcp,udp"}
 	}
 	b, _ := json.Marshal(m)
 	return b
+}
+
+// addFallback appends the default (catch-all) fallback to the local website when
+// the inbound is in TLS mode. With no path/alpn it catches every request that
+// isn't valid proxy traffic — the masquerade. Requires the inbound's TLS to set
+// alpn (done in buildInbound).
+func addFallback(m map[string]any, tls *TLSSpec) {
+	if tls == nil || tls.FallbackDest == "" {
+		return
+	}
+	m["fallbacks"] = []map[string]any{{"dest": tls.FallbackDest}}
 }
 
 // JSON renders the config as indented xray-core JSON.

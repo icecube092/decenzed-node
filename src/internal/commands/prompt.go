@@ -27,13 +27,17 @@ var portChoices = []int{443, 8443}
 func askPort(r *bufio.Reader, current int) int {
 	def := current
 	if def == 0 {
-		def = portChoices[0]
+		// Fresh setup: default to the first choice that is actually free.
+		def = firstAvailablePort(portChoices)
 	}
 	fmt.Println("Node port (forward this TCP port on your router):")
 	for i, p := range portChoices {
 		mark := ""
 		if p == def {
 			mark = "  <- default"
+		}
+		if !portAvailable(p) {
+			mark += "  (in use)"
 		}
 		fmt.Printf("  %d) %d%s\n", i+1, p, mark)
 	}
@@ -44,18 +48,27 @@ func askPort(r *bufio.Reader, current int) int {
 		if err != nil {
 			fmt.Println(def)
 		}
-		return def
+		return warnIfBusy(def)
 	}
 	if n, aerr := strconv.Atoi(line); aerr == nil {
 		if n >= 1 && n <= len(portChoices) {
-			return portChoices[n-1]
+			return warnIfBusy(portChoices[n-1])
 		}
 		if n >= 1 && n <= 65535 {
-			return n
+			return warnIfBusy(n)
 		}
 	}
 	fmt.Println("  ! invalid — keeping", def)
-	return def
+	return warnIfBusy(def)
+}
+
+// warnIfBusy prints a non-blocking notice if the port can't be bound right now
+// (something else is using it), then returns the port unchanged.
+func warnIfBusy(port int) int {
+	if !portAvailable(port) {
+		fmt.Printf("  ! heads up: TCP %d looks busy on this machine — free it or the node won't bind.\n", port)
+	}
+	return port
 }
 
 func parseBandwidth(s string) (float64, error) {
@@ -89,6 +102,23 @@ func floatMul(s string, m float64) (float64, error) {
 		return 0, err
 	}
 	return f * m, nil
+}
+
+// askYesNo asks a yes/no question. Enter keeps the default; a leading 'y' (or
+// "yes") is yes, "n"/negative sentinels are no.
+func askYesNo(r *bufio.Reader, q string, def bool) bool {
+	d := "n"
+	if def {
+		d = "y"
+	}
+	v := strings.ToLower(strings.TrimSpace(ask(r, q+" (y/n)", d)))
+	if v == "" {
+		return def
+	}
+	if isNo(v) {
+		return false
+	}
+	return strings.HasPrefix(v, "y")
 }
 
 // isNo reports whether the user typed a negative sentinel ("no"/"none"/"off"/

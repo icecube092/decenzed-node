@@ -33,8 +33,24 @@ type Snapshot struct {
 	TotalUp   uint64 `json:"total_up"`
 	TotalDown uint64 `json:"total_down"`
 
+	// Per-client (keyed by UUID) and per-inbound (keyed by a display label, e.g.
+	// "vless"/"trojan"/"shadowsocks"/"ss-2022") lifetime traffic. xray exposes
+	// per-user and per-inbound counters but NOT their cross, so these are two
+	// independent breakdowns, not a per-inbound-per-client matrix.
+	PerClient  map[string]DirBytes `json:"per_client,omitempty"`
+	PerInbound map[string]DirBytes `json:"per_inbound,omitempty"`
+
 	Port int `json:"port"`
 }
+
+// DirBytes is cumulative traffic in each direction (bytes).
+type DirBytes struct {
+	Up   uint64 `json:"up"`
+	Down uint64 `json:"down"`
+}
+
+// Total returns up+down.
+func (d DirBytes) Total() uint64 { return d.Up + d.Down }
 
 // Path returns the stats file location given the config file path.
 func Path(configPath string) string {

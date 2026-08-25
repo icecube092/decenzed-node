@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -136,6 +137,59 @@ func localIPv4s() []string {
 		}
 	}
 	return out
+}
+
+// --- port availability (setup helpers) ---
+
+// portAvailable reports whether we can bind the given TCP port right now — a
+// rough "is this port free on this machine" probe used to recommend a default
+// during setup. Binding all interfaces (":port") mirrors how the node listens.
+func portAvailable(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
+// recommendPortInRange returns a RANDOM free TCP port in [lo, hi] not in `taken`.
+// Random (rather than first-free) so different nodes don't all land on the same
+// port. Tries a handful of random picks, then a linear scan, then falls back to
+// lo.
+func recommendPortInRange(lo, hi int, taken ...int) int {
+	isTaken := func(p int) bool {
+		for _, t := range taken {
+			if t != 0 && t == p {
+				return true
+			}
+		}
+		return false
+	}
+	span := int64(hi - lo + 1)
+	for i := 0; i < 20; i++ {
+		p := lo + int(randInt(span))
+		if !isTaken(p) && portAvailable(p) {
+			return p
+		}
+	}
+	for p := lo; p <= hi; p++ {
+		if !isTaken(p) && portAvailable(p) {
+			return p
+		}
+	}
+	return lo
+}
+
+// firstAvailablePort returns the first free port from choices, or choices[0] if
+// none are free (so the caller still has a usable default).
+func firstAvailablePort(choices []int) int {
+	for _, p := range choices {
+		if portAvailable(p) {
+			return p
+		}
+	}
+	return choices[0]
 }
 
 // --- ids ---

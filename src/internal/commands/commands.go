@@ -108,7 +108,8 @@ Run with no arguments for an interactive shell (type commands, 'exit' to quit).
 Or run one command: decenzed-node <command>
 
 Getting started:
-  1. setup                  Wizard: port, policy, pick a REALITY domain, keys.
+  1. setup                  Wizard: port, policy, camouflage (REALITY or your
+                            own TLS website + Let's Encrypt), keys.
   2. check                  Public IP, speed test, self-reachability, port help.
   3. service install        Run in the background on boot (needs admin/root).
   4. link                   Print your connection link to share.

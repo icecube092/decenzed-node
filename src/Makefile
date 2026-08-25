@@ -8,11 +8,25 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 # GOOS/GOARCH targets to cross-compile for.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-.PHONY: all build test vet fmt clean cross cross-openwrt publish-bin $(PLATFORMS)
+.PHONY: all build build-win build-test build-test-win test vet fmt clean cross cross-openwrt publish-bin $(PLATFORMS)
 
-## build: native build for the host platform
+## build: native build for the host platform (production Let's Encrypt CA)
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY) $(PKG)
+
+## build-win: Windows amd64 PRODUCTION binary (trusted Let's Encrypt CA)
+build-win:
+	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" \
+		-o $(DIST)/$(BINARY).exe $(PKG)
+
+## build-test: native TEST build (Let's Encrypt STAGING CA via -tags staging)
+build-test:
+	go build -tags staging -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY)-staging $(PKG)
+
+## build-test-win: Windows amd64 TEST binary (staging CA) — for local testing
+build-test-win:
+	GOOS=windows GOARCH=amd64 go build -tags staging -ldflags "$(LDFLAGS)" \
+		-o $(DIST)/$(BINARY)-staging.exe $(PKG)
 
 ## test: run all unit tests
 test:

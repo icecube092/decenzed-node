@@ -1,13 +1,68 @@
 package commands
 
 import (
-	"encoding/json"
+	"bufio"
+	"encoding/base64"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"decenzed/node_app/internal/config"
 )
+
+func TestAskProtocolPortKeepsSavedPort(t *testing.T) {
+	// A saved (current != 0) port must be offered — and kept on Enter — even if it
+	// differs from the recommended one and even if the port is currently busy
+	// (e.g. the running service holds it during a re-run of setup).
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	saved := busy.Addr().(*net.TCPAddr).Port // a port that is definitely in use
+
+	r := bufio.NewReader(strings.NewReader("\n")) // press Enter = keep default
+	got := askProtocolPort(r, "test port", saved, 39999 /*recommended, different*/, 443)
+	if got != saved {
+		t.Errorf("askProtocolPort kept %d, want saved %d", got, saved)
+	}
+}
+
+func TestCheckInbounds(t *testing.T) {
+	// Without a config: only the default VLESS port is reported.
+	got := checkInbounds(config.AppConfig{}, false)
+	if len(got) != 1 || got[0].name != config.ProtoVLESS || got[0].port != 443 {
+		t.Fatalf("no-config case = %+v", got)
+	}
+
+	// With a config: all protocols in order; disabled ones keep port 0.
+	cfg := config.AppConfig{Port: 8443, TrojanPort: 0, SSPort: 35123, SS2022Port: 0}
+	got = checkInbounds(cfg, true)
+	want := []checkInbound{
+		{config.ProtoVLESS, 8443},
+		{config.ProtoTrojan, 0},
+		{config.ProtoShadowsocks, 35123},
+		{"shadowsocks-2022", 0},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestJoinPorts(t *testing.T) {
+	if got := joinPorts([]int{8443, 8444, 9443}); got != "8443, 8444, 9443" {
+		t.Errorf("joinPorts = %q", got)
+	}
+	if got := joinPorts([]int{443}); got != "443" {
+		t.Errorf("joinPorts single = %q", got)
+	}
+}
 
 func TestIsNo(t *testing.T) {
 	for _, s := range []string{"no", "No", "NONE", " none ", "off", "-"} {
@@ -157,53 +212,148 @@ func TestClientLinkTrojanAndSS(t *testing.T) {
 		t.Errorf("trojan link must not carry an XTLS flow: %q", trojan)
 	}
 
-	ss := clientLink(c, cl, "host.example", config.Inbound{Protocol: config.ProtoShadowsocks, Port: 9443})
+	// Classic Shadowsocks (chacha20-ietf-poly1305): userinfo base64 = method:UUID.
+	ss := clientLink(c, cl, "host.example",
+		config.Inbound{Protocol: config.ProtoShadowsocks, Port: 9443, Method: config.SSMethodClassic})
 	if !strings.HasPrefix(ss, "ss://") || !strings.Contains(ss, "@host.example:9443#bob") {
 		t.Errorf("unexpected ss link: %q", ss)
 	}
-}
-
-func TestSingboxOutbound(t *testing.T) {
-	c := config.AppConfig{
-		Port:              8443,
-		RealityServerName: []string{"www.qualcomm.com"},
-		RealityPublicKey:  "PUBKEY",
-		RealityShortIDs:   []string{"beef"},
-	}
-	ib := config.Inbound{Protocol: config.ProtoVLESS, Port: 8443}
-	out := clientSingbox(c, config.Client{UUID: "uuid-1", Name: "alice"}, "host.example", ib)
-
-	// It must be valid JSON that round-trips to the expected values.
-	var ob struct {
-		Type, Tag, Server, UUID, Flow, Network string
-		ServerPort                             int `json:"server_port"`
-		TLS                                    struct {
-			Enabled    bool
-			ServerName string `json:"server_name"`
-			Reality    struct {
-				Enabled   bool
-				PublicKey string `json:"public_key"`
-				ShortID   string `json:"short_id"`
-			}
-			UTLS struct {
-				Enabled     bool
-				Fingerprint string
-			} `json:"utls"`
+	if enc := strings.TrimSuffix(strings.TrimPrefix(ss, "ss://"), "@host.example:9443#bob"); enc != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(enc)
+		if err != nil {
+			t.Fatalf("ss userinfo not base64url: %v", err)
+		}
+		if want := config.SSMethodClassic + ":" + cl.UUID; string(raw) != want {
+			t.Errorf("ss userinfo = %q, want %q", string(raw), want)
 		}
 	}
-	if err := json.Unmarshal([]byte(out), &ob); err != nil {
-		t.Fatalf("outbound is not valid JSON: %v\n%s", err, out)
+
+	// SS-2022 variant: userinfo = method:serverPSK:userPSK.
+	ss2022 := clientLink(c, cl, "host.example",
+		config.Inbound{Protocol: config.ProtoShadowsocks, Port: 9444, Method: config.SSMethod2022})
+	enc := strings.TrimSuffix(strings.TrimPrefix(ss2022, "ss://"), "@host.example:9444#bob")
+	raw, err := base64.RawURLEncoding.DecodeString(enc)
+	if err != nil {
+		t.Fatalf("ss2022 userinfo not base64url: %v", err)
 	}
-	if ob.Type != "vless" || ob.Tag != "alice" || ob.Server != "host.example" ||
-		ob.ServerPort != 8443 || ob.UUID != "uuid-1" || ob.Flow != "xtls-rprx-vision" ||
-		ob.Network != "tcp" {
-		t.Errorf("unexpected outbound: %+v", ob)
+	if want := config.SSMethod2022 + ":" + c.SSServerKey + ":" + config.SSUserPSK(cl.UUID); string(raw) != want {
+		t.Errorf("ss2022 userinfo = %q, want %q", string(raw), want)
 	}
-	if !ob.TLS.Enabled || ob.TLS.ServerName != "www.qualcomm.com" ||
-		!ob.TLS.Reality.Enabled || ob.TLS.Reality.PublicKey != "PUBKEY" ||
-		ob.TLS.Reality.ShortID != "beef" || !ob.TLS.UTLS.Enabled ||
-		ob.TLS.UTLS.Fingerprint != "chrome" {
-		t.Errorf("unexpected tls block: %+v", ob.TLS)
+}
+
+func TestClientLinkTLSMode(t *testing.T) {
+	c := config.AppConfig{
+		Port:             443,
+		TrojanPort:       8443,
+		Camouflage:       config.CamouflageTLSMode,
+		DuckDNSToken:     "tok",
+		DuckDNSSubdomain: "mynode",
+	}
+	cl := config.Client{UUID: "uuid-1", Name: "carol"}
+
+	vless := clientLink(c, cl, "mynode.duckdns.org", config.Inbound{Protocol: config.ProtoVLESS, Port: 443})
+	for _, want := range []string{
+		"vless://uuid-1@mynode.duckdns.org:443?",
+		"security=tls",
+		"sni=mynode.duckdns.org",
+		"flow=xtls-rprx-vision",
+		"#carol",
+	} {
+		if !strings.Contains(vless, want) {
+			t.Errorf("vless TLS link %q missing %q", vless, want)
+		}
+	}
+	if strings.Contains(vless, "reality") || strings.Contains(vless, "pbk=") {
+		t.Errorf("TLS link must not carry REALITY params: %q", vless)
+	}
+
+	trojan := clientLink(c, cl, "mynode.duckdns.org", config.Inbound{Protocol: config.ProtoTrojan, Port: 8443})
+	if !strings.Contains(trojan, "security=tls") || strings.Contains(trojan, "flow=") {
+		t.Errorf("trojan TLS link wrong: %q", trojan)
+	}
+}
+
+func TestInputFromConfigTLSMode(t *testing.T) {
+	c := config.AppConfig{
+		Port:             443,
+		TrojanPort:       8443,
+		SSPort:           9443,
+		SSServerKey:      "c2VydmVya2V5MTIzNDU2",
+		Camouflage:       config.CamouflageTLSMode,
+		DuckDNSToken:     "tok",
+		DuckDNSSubdomain: "mynode",
+		Clients:          []config.Client{{UUID: "u1", Name: "me"}},
+	}
+	in := inputFromConfig(c)
+
+	byProto := map[string]bool{}
+	for _, ib := range in.Inbounds {
+		byProto[ib.Protocol] = true
+		switch ib.Protocol {
+		case config.ProtoVLESS, config.ProtoTrojan:
+			if ib.TLS == nil {
+				t.Errorf("%s should have TLS spec in tls mode", ib.Protocol)
+				continue
+			}
+			if ib.Reality != nil {
+				t.Errorf("%s must not carry REALITY in tls mode", ib.Protocol)
+			}
+			if ib.TLS.ServerName != "mynode.duckdns.org" {
+				t.Errorf("%s serverName = %q", ib.Protocol, ib.TLS.ServerName)
+			}
+			if ib.TLS.FallbackDest != "127.0.0.1:8080" {
+				t.Errorf("%s fallback = %q", ib.Protocol, ib.TLS.FallbackDest)
+			}
+		case config.ProtoShadowsocks:
+			if ib.TLS != nil || ib.Reality != nil {
+				t.Error("shadowsocks must have neither TLS nor REALITY")
+			}
+		}
+	}
+	for _, p := range []string{config.ProtoVLESS, config.ProtoTrojan, config.ProtoShadowsocks} {
+		if !byProto[p] {
+			t.Errorf("missing inbound %s", p)
+		}
+	}
+}
+
+func TestSubscriptionURLAndBody(t *testing.T) {
+	c := config.AppConfig{
+		Port:             8443,
+		TrojanPort:       8444,
+		SSPort:           9443,
+		SSServerKey:      "c2VydmVya2V5MTIzNDU2",
+		Camouflage:       config.CamouflageTLSMode,
+		DuckDNSToken:     "tok",
+		DuckDNSSubdomain: "mynode",
+		Clients:          []config.Client{{UUID: "uuid-1", Name: "alice"}},
+	}
+	cl := c.Clients[0]
+
+	url := subscriptionURL(c, cl)
+	if url != "https://mynode.duckdns.org:8443/sub/uuid-1" {
+		t.Errorf("subscriptionURL = %q", url)
+	}
+
+	// The subscription lookup resolves a known id and base64-decodes to the
+	// per-protocol links; an unknown id is rejected.
+	fn := subscriptionFunc(c)
+	body, ok := fn("uuid-1")
+	if !ok {
+		t.Fatal("known id not found")
+	}
+	raw, err := base64.StdEncoding.DecodeString(body)
+	if err != nil {
+		t.Fatalf("body is not base64: %v", err)
+	}
+	dec := string(raw)
+	for _, want := range []string{"vless://", "trojan://", "ss://", "mynode.duckdns.org"} {
+		if !strings.Contains(dec, want) {
+			t.Errorf("subscription missing %q\n%s", want, dec)
+		}
+	}
+	if _, ok := fn("nope"); ok {
+		t.Error("unknown id should not resolve")
 	}
 }
 

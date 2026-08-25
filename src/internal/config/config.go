@@ -13,6 +13,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,13 +54,18 @@ type AppConfig struct {
 	// Extra protocols (optional). Each runs as its own xray inbound on its own
 	// port — one port can host only one protocol, so every enabled protocol
 	// needs its own forwarded TCP port. A 0 port means the protocol is disabled.
-	//   - Trojan shares the same REALITY camouflage as VLESS (no XTLS flow: Vision
-	//     is VLESS-only). Its per-client password is the client UUID.
-	//   - Shadowsocks uses SS-2022 (2022-blake3-aes-128-gcm) with per-user keys;
-	//     it has NO REALITY/TLS masking — it is a distinct, less-stealthy traffic
-	//     type. SSServerKey is the server-wide PSK (base64), generated at setup.
+	//   - Trojan shares the same camouflage as VLESS (REALITY or TLS; no XTLS flow:
+	//     Vision is VLESS-only). Its per-client password is the client UUID.
+	//   - Shadowsocks (classic) uses chacha20-ietf-poly1305 in multi-user mode
+	//     (each client's password is its UUID). Broadest client support.
+	//   - Shadowsocks-2022 (2022-blake3-aes-128-gcm) uses per-user PSKs derived
+	//     from the UUID plus a server-wide key (SSServerKey). Stronger, but rejected
+	//     by many clients — offered as a SEPARATE inbound/port for those that do.
+	//   Neither Shadowsocks variant has REALITY/TLS masking — a distinct,
+	//   less-stealthy traffic type.
 	TrojanPort  int    `json:"trojan_port,omitempty"`
 	SSPort      int    `json:"ss_port,omitempty"`
+	SS2022Port  int    `json:"ss2022_port,omitempty"`
 	SSServerKey string `json:"ss_server_key,omitempty"`
 
 	// Policy.
@@ -69,13 +75,36 @@ type AppConfig struct {
 	DomainDeny     []string `json:"domain_deny"`     // always blocked
 	Autostart      bool     `json:"autostart"`
 
+	// Camouflage selects how the REALITY-capable protocols (VLESS, Trojan) hide.
+	// One tumbler for both — they cannot use different modes. Shadowsocks is never
+	// affected (it has no TLS layer).
+	//   - "reality" (default/empty): borrow a foreign TLS1.3+h2 site as REALITY dest.
+	//   - "tls": terminate real TLS with a Let's Encrypt cert for the node's own
+	//     domain and fall back to the node's own website (see the TLS fields below).
+	Camouflage string `json:"camouflage,omitempty"`
+
 	// REALITY camouflage — dest/serverName chosen at setup by scanning for a
-	// live TLS1.3+h2 site; the keypair is generated locally.
+	// live TLS1.3+h2 site; the keypair is generated locally. Used when
+	// Camouflage != "tls".
 	RealityDest       string   `json:"reality_dest"`
 	RealityServerName []string `json:"reality_server_names"`
 	RealityPrivateKey string   `json:"reality_private_key"`
 	RealityPublicKey  string   `json:"reality_public_key"`
 	RealityShortIDs   []string `json:"reality_short_ids"`
+
+	// TLS camouflage (Camouflage == "tls"): masquerade behind the node's own
+	// website with a Let's Encrypt certificate (DNS-01 via DuckDNS). TLSDomain
+	// defaults to the DuckDNS host. SitePort is the localhost port the built-in
+	// website listens on (xray's fallback target); 0 means the default.
+	//
+	// ACMEEmail is the account contact given to the CA. ACMEAgreeTOS records that
+	// the operator accepted the CA Subscriber Agreement during setup, so unattended
+	// renewals can proceed without prompting. The staging-vs-production CA is fixed
+	// at BUILD time (see internal/acme.StagingBuild), not stored here.
+	TLSDomain    string `json:"tls_domain,omitempty"`
+	ACMEEmail    string `json:"acme_email,omitempty"`
+	ACMEAgreeTOS bool   `json:"acme_agree_tos,omitempty"`
+	SitePort     int    `json:"site_port,omitempty"`
 
 	// Clients — your own + friends' credentials. Each maps to one share link.
 	Clients []Client `json:"clients"`
@@ -88,16 +117,63 @@ const (
 	ProtoShadowsocks = "shadowsocks"
 )
 
-// SSMethod is the Shadowsocks-2022 AEAD method we use. Its key length is 16
-// bytes, so both the server PSK and every per-user PSK are base64 of 16 bytes.
-const SSMethod = "2022-blake3-aes-128-gcm"
+// Camouflage modes for VLESS/Trojan.
+const (
+	CamouflageReality = "reality"
+	CamouflageTLSMode = "tls"
+)
 
-// ssKeyLen is the raw key length (bytes) for SSMethod.
-const ssKeyLen = 16
+// defaultSitePort is the localhost port the built-in decoy website uses when
+// SitePort is unset.
+const defaultSitePort = 8080
+
+// CamouflageTLS reports whether VLESS/Trojan masquerade behind the node's own
+// TLS website (as opposed to REALITY). Empty/unset means REALITY.
+func (c AppConfig) CamouflageTLS() bool { return c.Camouflage == CamouflageTLSMode }
+
+// TLSHost is the domain the node's certificate is issued for and clients connect
+// to in TLS mode: the explicit override, else the DuckDNS host.
+func (c AppConfig) TLSHost() string {
+	if c.TLSDomain != "" {
+		return c.TLSDomain
+	}
+	return c.DuckDNSHost()
+}
+
+// SiteAddr is the localhost address the built-in website listens on and that
+// xray falls back to in TLS mode.
+func (c AppConfig) SiteAddr() string {
+	p := c.SitePort
+	if p == 0 {
+		p = defaultSitePort
+	}
+	return fmt.Sprintf("127.0.0.1:%d", p)
+}
+
+// IsConfigured reports whether setup has produced enough state to start the node
+// in its selected camouflage mode: REALITY needs a keypair; TLS needs a domain
+// (the certificate itself is obtained at runtime).
+func (c AppConfig) IsConfigured() bool {
+	if c.CamouflageTLS() {
+		return c.TLSHost() != ""
+	}
+	return c.RealityPublicKey != ""
+}
+
+// Shadowsocks cipher methods. The classic AEAD cipher has the broadest client
+// support; SS-2022 is stronger but many clients reject it, so it is offered as a
+// separate inbound for the clients that do.
+const (
+	SSMethodClassic = "chacha20-ietf-poly1305"
+	SSMethod2022    = "2022-blake3-aes-128-gcm"
+)
+
+// ss2022KeyLen is the raw key length (bytes) for SSMethod2022.
+const ss2022KeyLen = 16
 
 // NewSSServerKey generates a random Shadowsocks-2022 server PSK (base64).
 func NewSSServerKey() (string, error) {
-	b := make([]byte, ssKeyLen)
+	b := make([]byte, ss2022KeyLen)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
@@ -109,13 +185,19 @@ func NewSSServerKey() (string, error) {
 // (xray inbound) and the share link both derive it the same way.
 func SSUserPSK(uuid string) string {
 	sum := sha256.Sum256([]byte("decenzed-ss-2022|" + uuid))
-	return base64.StdEncoding.EncodeToString(sum[:ssKeyLen])
+	return base64.StdEncoding.EncodeToString(sum[:ss2022KeyLen])
 }
 
-// Inbound is one enabled listener: a protocol on a public TCP port.
+// IsSS2022 reports whether a Shadowsocks cipher is an SS-2022 method.
+func IsSS2022(method string) bool { return strings.HasPrefix(method, "2022-") }
+
+// Inbound is one enabled listener: a protocol on a public TCP port. For
+// Shadowsocks, Method carries the cipher (the two SS variants share the protocol
+// id but differ by cipher/port); it is empty for VLESS/Trojan.
 type Inbound struct {
 	Protocol string
 	Port     int
+	Method   string
 }
 
 // PublicInbounds lists the protocol listeners this node exposes, in a stable
@@ -130,7 +212,10 @@ func (c AppConfig) PublicInbounds() []Inbound {
 		out = append(out, Inbound{Protocol: ProtoTrojan, Port: c.TrojanPort})
 	}
 	if c.SSPort != 0 {
-		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SSPort})
+		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SSPort, Method: SSMethodClassic})
+	}
+	if c.SS2022Port != 0 {
+		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SS2022Port, Method: SSMethod2022})
 	}
 	return out
 }

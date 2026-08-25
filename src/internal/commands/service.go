@@ -61,7 +61,7 @@ func cmdService(args []string) error {
 	switch args[0] {
 	case "install":
 		c, cErr := loadConfig()
-		if cErr != nil || c.RealityPublicKey == "" {
+		if cErr != nil || !c.IsConfigured() {
 			return fmt.Errorf("run 'setup' first")
 		}
 		if err := svc.Install(); err != nil {

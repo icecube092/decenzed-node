@@ -29,14 +29,10 @@ func cmdCheck(r *bufio.Reader) error {
 
 	runSpeedTest()
 
-	port := 443
 	var cfg config.AppConfig
 	haveCfg := false
 	if c, err := loadConfig(); err == nil {
 		cfg, haveCfg = c, true
-		if c.Port != 0 {
-			port = c.Port
-		}
 	}
 
 	// When DuckDNS is configured, refresh the record and confirm the domain
@@ -54,26 +50,60 @@ func cmdCheck(r *bufio.Reader) error {
 		}
 	}
 
-	// Self-reachability: connect back to our own domain/IP on the node port to
-	// confirm the port is actually reachable from the outside (port-forwarding).
-	reachable := false
-	if host := selfCheckHost(cfg, ip); host != "" {
-		fmt.Printf("\nself-check:        dialing %s:%d ...\n", host, port)
-		if err := selfReach(host, port, 6*time.Second); err != nil {
-			fmt.Printf("  ! could not reach %s:%d from here: %v\n", host, port, err)
-			fmt.Println("    (this is normal from inside your own LAN — many routers can't")
-			fmt.Println("     loop back to your public IP; test from mobile data to be sure.)")
+	// Self-reachability, per protocol: connect back to our own domain/IP on each
+	// ENABLED inbound's port to confirm it's reachable from outside
+	// (port-forwarding). Disabled protocols are reported as such.
+	host := selfCheckHost(cfg, ip)
+	fmt.Println("\nprotocol ports:")
+	var unreachable []int
+	for _, pr := range checkInbounds(cfg, haveCfg) {
+		label := pr.name + ":"
+		if pr.port == 0 {
+			fmt.Printf("  %-12s disabled\n", label)
+			continue
+		}
+		if host == "" {
+			fmt.Printf("  %-12s TCP %d — can't self-check (no public IP/domain)\n", label, pr.port)
+			continue
+		}
+		fmt.Printf("  %-12s dialing %s:%d ... ", label, host, pr.port)
+		if err := selfReach(host, pr.port, 6*time.Second); err != nil {
+			fmt.Printf("unreachable (%v)\n", err)
+			unreachable = append(unreachable, pr.port)
 		} else {
-			fmt.Printf("  ok — %s:%d accepted a TCP connection.\n", host, port)
-			reachable = true
+			fmt.Println("ok — accepted a TCP connection")
 		}
 	}
 
-	// Only nudge about port-forwarding when we couldn't confirm reachability.
-	if !reachable {
-		printPortForwardHelp(port, ip, localIPv4s())
+	// Only nudge about port-forwarding when an enabled protocol wasn't reachable.
+	if len(unreachable) > 0 {
+		fmt.Println("\n  ! could not confirm the port(s) above from here. This is normal from")
+		fmt.Println("    inside your own LAN — many routers can't loop back to your public IP;")
+		fmt.Println("    test from mobile data to be sure. If it really is closed, forward it:")
+		printPortForwardHelp(ip, localIPv4s(), unreachable...)
 	}
 	return nil
+}
+
+// checkInbound pairs a protocol name with its configured port (0 = disabled).
+type checkInbound struct {
+	name string
+	port int
+}
+
+// checkInbounds lists the protocols to report in `check`, in a stable order
+// (VLESS, Trojan, Shadowsocks). Without a saved config we can only assume the
+// default VLESS port, so just that one is reported.
+func checkInbounds(cfg config.AppConfig, haveCfg bool) []checkInbound {
+	if !haveCfg {
+		return []checkInbound{{config.ProtoVLESS, 443}}
+	}
+	return []checkInbound{
+		{config.ProtoVLESS, cfg.Port},
+		{config.ProtoTrojan, cfg.TrojanPort},
+		{config.ProtoShadowsocks, cfg.SSPort},
+		{"shadowsocks-2022", cfg.SS2022Port},
+	}
 }
 
 // verifyDuckDNSResolves resolves host and reports whether it currently points at
@@ -159,25 +189,37 @@ func runSpeedTest() {
 	}
 }
 
-func printPortForwardHelp(port int, publicIP string, local []string) {
+// printPortForwardHelp prints router port-forwarding instructions for one or
+// more TCP ports (one per enabled protocol).
+func printPortForwardHelp(publicIP string, local []string, ports ...int) {
 	lan := "your machine's LAN IP"
 	if len(local) > 0 {
 		lan = local[0]
 	}
+	ps := joinPorts(ports)
 	fmt.Printf(`
-── open port %d on your router ─────────────────────────────────
-Friends connect INBOUND to this machine, so forward TCP port %d:
+── open port(s) %s on your router ─────────────────────────────
+Friends connect INBOUND to this machine, so forward TCP port(s) %s:
 
   1. Open your router admin page (often http://192.168.1.1).
   2. Find "Port Forwarding" / "Virtual Server" / "NAT".
-  3. Add: protocol TCP, external port %d, internal port %d,
+  3. For EACH port add: protocol TCP, external port = internal port,
      internal IP %s (this machine).
   4. Give this machine a STATIC LAN IP (DHCP reservation).
 
-Tips: allow TCP %d in your firewall; if your ISP uses CGNAT
+Tips: allow those TCP port(s) in your firewall; if your ISP uses CGNAT
 (public IP starts with 100.64–100.127 or is private), forwarding
 won't help — ask for a public IP or use a VPS. Some ISPs block
 443; port 8443 usually works.
 ────────────────────────────────────────────────────────────────
-`, port, port, port, port, lan, port)
+`, ps, ps, lan)
+}
+
+// joinPorts renders ports as a comma-separated list, e.g. "8443, 8444, 9443".
+func joinPorts(ports []int) string {
+	ss := make([]string, len(ports))
+	for i, p := range ports {
+		ss[i] = strconv.Itoa(p)
+	}
+	return strings.Join(ss, ", ")
 }

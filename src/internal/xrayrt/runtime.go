@@ -25,9 +25,13 @@ type Runtime interface {
 	Stop() error
 	// Stats returns current cumulative per-UUID counters (from xray Stats API).
 	Stats() (traffic.Snapshot, error)
+	// InboundStats returns current cumulative per-inbound-tag counters.
+	InboundStats() (traffic.Snapshot, error)
 	// SetActiveUUIDs adds/removes clients without a full restart (HandlerService),
 	// used for quota revocation and new subscriptions.
 	SetActiveUUIDs(uuids []string) error
+	// SetInboundTags records which inbound tags to read per-inbound stats for.
+	SetInboundTags(tags []string) error
 }
 
 // Supervise runs fn, restarting it on panic or error, until ctx is cancelled.
@@ -66,7 +70,9 @@ type StubRuntime struct {
 	mu       sync.Mutex
 	started  bool
 	snapshot traffic.Snapshot
+	inbound  traffic.Snapshot
 	active   []string
+	tags     []string
 }
 
 func NewStub() *StubRuntime { return &StubRuntime{snapshot: traffic.Snapshot{}} }
@@ -96,10 +102,27 @@ func (s *StubRuntime) Stats() (traffic.Snapshot, error) {
 	return out, nil
 }
 
+func (s *StubRuntime) InboundStats() (traffic.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(traffic.Snapshot, len(s.inbound))
+	for k, v := range s.inbound {
+		out[k] = v
+	}
+	return out, nil
+}
+
 func (s *StubRuntime) SetActiveUUIDs(uuids []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.active = append([]string(nil), uuids...)
+	return nil
+}
+
+func (s *StubRuntime) SetInboundTags(tags []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tags = append([]string(nil), tags...)
 	return nil
 }
 
@@ -108,4 +131,11 @@ func (s *StubRuntime) SetStats(snap traffic.Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.snapshot = snap
+}
+
+// SetInboundStats is a test helper to inject cumulative inbound counters.
+func (s *StubRuntime) SetInboundStats(snap traffic.Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inbound = snap
 }

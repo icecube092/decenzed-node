@@ -32,6 +32,40 @@ func Update(ctx context.Context, domain, token, ip string) error {
 	if ip != "" {
 		q.Set("ip", ip)
 	}
+	return do(ctx, q)
+}
+
+// SetTXT sets the TXT record for _acme-challenge.<domain>.duckdns.org to value.
+// DuckDNS stores one TXT value per domain, which is exactly what an ACME DNS-01
+// challenge for a single hostname needs. domain is the subdomain label WITHOUT
+// ".duckdns.org".
+func SetTXT(ctx context.Context, domain, token, value string) error {
+	if domain == "" || token == "" {
+		return fmt.Errorf("duckdns: domain and token required")
+	}
+	q := url.Values{}
+	q.Set("domains", domain)
+	q.Set("token", token)
+	q.Set("txt", value)
+	return do(ctx, q)
+}
+
+// ClearTXT removes the TXT record set by SetTXT (best-effort cleanup after an
+// ACME challenge).
+func ClearTXT(ctx context.Context, domain, token string) error {
+	if domain == "" || token == "" {
+		return fmt.Errorf("duckdns: domain and token required")
+	}
+	q := url.Values{}
+	q.Set("domains", domain)
+	q.Set("token", token)
+	q.Set("txt", "")
+	q.Set("clear", "true")
+	return do(ctx, q)
+}
+
+// do issues the DuckDNS request and requires an "OK" response.
+func do(ctx context.Context, q url.Values) error {
 	u := endpoint + "?" + q.Encode()
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -47,7 +81,7 @@ func Update(ctx context.Context, domain, token, ip string) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 	if strings.TrimSpace(string(body)) != "OK" {
-		return fmt.Errorf("duckdns: update rejected (%q) — check the token/domain",
+		return fmt.Errorf("duckdns: request rejected (%q) — check the token/domain",
 			strings.TrimSpace(string(body)))
 	}
 	return nil

@@ -2,18 +2,18 @@ package commands
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"decenzed/node_app/internal/config"
+	"decenzed/node_app/internal/site"
 )
 
 func cmdLink(args []string) error {
 	path, _ := configPath()
 	c, err := config.Load(path)
-	if err != nil || c.RealityPublicKey == "" {
+	if err != nil || !c.IsConfigured() {
 		return fmt.Errorf("run 'setup' first")
 	}
 	sub := ""
@@ -99,18 +99,71 @@ func printLinks(c config.AppConfig) {
 	}
 }
 
-// printClient prints, for one client, a share link + sing-box outbound for every
-// protocol the node exposes (VLESS/Trojan/Shadowsocks).
+// printClient prints one client's SUBSCRIPTION link. In TLS mode the subscription
+// is hosted by the node's own website (behind xray's TLS fallback): the client
+// adds one URL and its app pulls every protocol automatically. In REALITY mode
+// there is no hosted site, so the individual per-protocol links are printed
+// instead (the same content a subscription would carry).
 func printClient(c config.AppConfig, cl config.Client, host string) {
 	label := cl.Name
 	if label == "" {
 		label = cl.UUID[:8]
 	}
-	for _, ib := range c.PublicInbounds() {
-		fmt.Printf("\n  %-12s [%s]  %s\n", label, ib.Protocol, clientLink(c, cl, host, ib))
-		fmt.Print("\n  sing-box outbound:\n\n")
-		fmt.Println(clientSingbox(c, cl, host, ib))
+	if c.CamouflageTLS() {
+		fmt.Printf("\n  %-12s subscription:\n    %s\n", label, subscriptionURL(c, cl))
+		return
 	}
+	fmt.Printf("\n  %s\n", label)
+	for _, ib := range c.PublicInbounds() {
+		fmt.Printf("    [%-11s] %s\n", protoLabel(ib), clientLink(c, cl, host, ib))
+	}
+}
+
+// protoLabel is a display label for an inbound, distinguishing the two
+// Shadowsocks variants (which share the protocol id but differ by cipher).
+func protoLabel(ib config.Inbound) string {
+	if ib.Protocol == config.ProtoShadowsocks && config.IsSS2022(ib.Method) {
+		return "ss-2022"
+	}
+	return ib.Protocol
+}
+
+// subscriptionURL is the per-client subscription address, served by the decoy
+// website behind xray's TLS fallback on the node's own domain and VLESS port.
+// Paste it into a client (v2rayN/NG, nekobox, Hiddify, sing-box, …) as a
+// subscription; the app fetches every protocol link from it.
+func subscriptionURL(c config.AppConfig, cl config.Client) string {
+	return fmt.Sprintf("https://%s:%d%s%s", c.TLSHost(), c.Port, site.SubPath, cl.UUID)
+}
+
+// subscriptionFunc builds the site's subscription lookup: it maps a client id to
+// the base64 subscription body carrying that client's per-protocol links. Bound
+// to the config the daemon started with (client changes restart the service, so
+// the site is rebuilt with the new set).
+func subscriptionFunc(c config.AppConfig) site.SubFunc {
+	host := c.TLSHost()
+	return func(id string) (string, bool) {
+		for _, cl := range c.Clients {
+			if cl.UUID == id {
+				return subscriptionBody(c, cl, host), true
+			}
+		}
+		return "", false
+	}
+}
+
+// subscriptionBody is the standard subscription payload: the client's protocol
+// links, newline-joined and base64-encoded (what subscription-capable clients
+// expect to decode).
+func subscriptionBody(c config.AppConfig, cl config.Client, host string) string {
+	var links []string
+	for _, ib := range c.PublicInbounds() {
+		if l := clientLink(c, cl, host, ib); l != "" {
+			links = append(links, l)
+		}
+	}
+	plain := strings.Join(links, "\n") + "\n"
+	return base64.StdEncoding.EncodeToString([]byte(plain))
 }
 
 // linkHost is the address that goes in share links: the DuckDNS domain when
@@ -133,7 +186,7 @@ func clientLink(c config.AppConfig, cl config.Client, host string, ib config.Inb
 	case config.ProtoTrojan:
 		return trojanLink(c, cl, host, ib.Port)
 	case config.ProtoShadowsocks:
-		return ssLink(c, cl, host, ib.Port)
+		return ssLink(c, cl, host, ib.Port, ib.Method)
 	}
 	return ""
 }
@@ -146,136 +199,49 @@ func linkName(cl config.Client) string {
 	return "decenzed"
 }
 
-// realityQuery fills the REALITY parameters common to the VLESS and Trojan links.
-func realityQuery(c config.AppConfig) url.Values {
+// camouflageQuery fills the transport-security parameters common to the VLESS
+// and Trojan links: REALITY, or real TLS when the node masquerades behind its
+// own website.
+func camouflageQuery(c config.AppConfig) url.Values {
 	q := url.Values{}
+	q.Set("type", "tcp")
+	q.Set("fp", "chrome")
+	if c.CamouflageTLS() {
+		q.Set("security", "tls")
+		q.Set("sni", c.TLSHost())
+		return q
+	}
 	q.Set("security", "reality")
 	q.Set("sni", firstOr(c.RealityServerName))
-	q.Set("fp", "chrome")
 	q.Set("pbk", c.RealityPublicKey)
 	q.Set("sid", first(c.RealityShortIDs))
-	q.Set("type", "tcp")
 	return q
 }
 
-// vlessLink builds a vless:// REALITY+Vision share link.
+// vlessLink builds a vless:// share link (REALITY or TLS) with the Vision flow.
 func vlessLink(c config.AppConfig, cl config.Client, host string, port int) string {
-	q := realityQuery(c)
+	q := camouflageQuery(c)
 	q.Set("encryption", "none")
 	q.Set("flow", "xtls-rprx-vision")
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", cl.UUID, host, port, q.Encode(), url.PathEscape(linkName(cl)))
 }
 
-// trojanLink builds a trojan:// REALITY share link (no XTLS flow: Vision is
-// VLESS-only). The Trojan password is the client UUID.
+// trojanLink builds a trojan:// share link (REALITY or TLS). No XTLS flow: Vision
+// is VLESS-only. The Trojan password is the client UUID.
 func trojanLink(c config.AppConfig, cl config.Client, host string, port int) string {
-	q := realityQuery(c)
+	q := camouflageQuery(c)
 	return fmt.Sprintf("trojan://%s@%s:%d?%s#%s", cl.UUID, host, port, q.Encode(), url.PathEscape(linkName(cl)))
 }
 
-// ssLink builds a SIP002 ss:// share link for Shadowsocks-2022. The userinfo is
-// url-safe base64 of "method:serverPSK:userPSK" (the SS-2022 client password is
-// serverPSK:userPSK).
-func ssLink(c config.AppConfig, cl config.Client, host string, port int) string {
-	userinfo := config.SSMethod + ":" + c.SSServerKey + ":" + config.SSUserPSK(cl.UUID)
+// ssLink builds a SIP002 ss:// share link. The userinfo is url-safe base64 (no
+// padding) of "method:password". For SS-2022 the password is serverPSK:userPSK;
+// for a classic AEAD cipher it is the client UUID.
+func ssLink(c config.AppConfig, cl config.Client, host string, port int, method string) string {
+	password := cl.UUID
+	if config.IsSS2022(method) {
+		password = c.SSServerKey + ":" + config.SSUserPSK(cl.UUID)
+	}
+	userinfo := method + ":" + password
 	enc := base64.RawURLEncoding.EncodeToString([]byte(userinfo))
 	return fmt.Sprintf("ss://%s@%s:%d#%s", enc, host, port, url.PathEscape(linkName(cl)))
-}
-
-// sing-box outbound schema (a subset), so the printed JSON drops straight into a
-// sing-box config's "outbounds" array. One struct per supported protocol.
-type sbVLESS struct {
-	Type       string `json:"type"`
-	Tag        string `json:"tag"`
-	Server     string `json:"server"`
-	ServerPort int    `json:"server_port"`
-	UUID       string `json:"uuid"`
-	Flow       string `json:"flow"`
-	Network    string `json:"network"`
-	TLS        sbTLS  `json:"tls"`
-}
-
-type sbTrojan struct {
-	Type       string `json:"type"`
-	Tag        string `json:"tag"`
-	Server     string `json:"server"`
-	ServerPort int    `json:"server_port"`
-	Password   string `json:"password"`
-	Network    string `json:"network"`
-	TLS        sbTLS  `json:"tls"`
-}
-
-type sbShadowsocks struct {
-	Type       string `json:"type"`
-	Tag        string `json:"tag"`
-	Server     string `json:"server"`
-	ServerPort int    `json:"server_port"`
-	Method     string `json:"method"`
-	Password   string `json:"password"`
-}
-
-type sbTLS struct {
-	Enabled    bool      `json:"enabled"`
-	ServerName string    `json:"server_name"`
-	Reality    sbReality `json:"reality"`
-	UTLS       sbUTLS    `json:"utls"`
-}
-
-type sbReality struct {
-	Enabled   bool   `json:"enabled"`
-	PublicKey string `json:"public_key"`
-	ShortID   string `json:"short_id,omitempty"`
-}
-
-type sbUTLS struct {
-	Enabled     bool   `json:"enabled"`
-	Fingerprint string `json:"fingerprint"`
-}
-
-// clientSingbox renders a client as a ready-to-paste sing-box outbound for a
-// specific inbound protocol (same credentials as the corresponding share link).
-func clientSingbox(c config.AppConfig, cl config.Client, host string, ib config.Inbound) string {
-	var ob any
-	switch ib.Protocol {
-	case config.ProtoVLESS:
-		ob = sbVLESS{
-			Type: "vless", Tag: singboxTag(cl), Server: host, ServerPort: ib.Port,
-			UUID: cl.UUID, Flow: "xtls-rprx-vision", Network: "tcp", TLS: realityTLS(c),
-		}
-	case config.ProtoTrojan:
-		ob = sbTrojan{
-			Type: "trojan", Tag: singboxTag(cl), Server: host, ServerPort: ib.Port,
-			Password: cl.UUID, Network: "tcp", TLS: realityTLS(c),
-		}
-	case config.ProtoShadowsocks:
-		ob = sbShadowsocks{
-			Type: "shadowsocks", Tag: singboxTag(cl), Server: host, ServerPort: ib.Port,
-			Method: config.SSMethod, Password: c.SSServerKey + ":" + config.SSUserPSK(cl.UUID),
-		}
-	default:
-		return ""
-	}
-	b, err := json.MarshalIndent(ob, "", "  ")
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// realityTLS builds the shared sing-box REALITY TLS block (VLESS/Trojan).
-func realityTLS(c config.AppConfig) sbTLS {
-	return sbTLS{
-		Enabled:    true,
-		ServerName: firstOr(c.RealityServerName),
-		Reality:    sbReality{Enabled: true, PublicKey: c.RealityPublicKey, ShortID: first(c.RealityShortIDs)},
-		UTLS:       sbUTLS{Enabled: true, Fingerprint: "chrome"},
-	}
-}
-
-// singboxTag is the outbound "tag": the client's name, or "decenzed" if unnamed.
-func singboxTag(cl config.Client) string {
-	if cl.Name != "" {
-		return cl.Name
-	}
-	return "decenzed"
 }

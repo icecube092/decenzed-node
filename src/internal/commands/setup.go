@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/xid"
 
+	"decenzed/node_app/internal/acme"
 	"decenzed/node_app/internal/config"
 	"decenzed/node_app/internal/realitykeys"
 	"decenzed/node_app/internal/realityscan"
@@ -90,24 +91,10 @@ func cmdSetup(r *bufio.Reader) error {
 
 	c.Autostart = true // the service always enables boot-start
 
-	// Pick a REALITY camouflage domain (scan for a live TLS1.3+h2 site).
-	if err := chooseRealityDomain(r, &c); err != nil {
+	// Choose how VLESS/Trojan hide: REALITY (borrow a foreign site) or TLS
+	// (masquerade behind the node's own website with a Let's Encrypt cert).
+	if err := configureCamouflage(r, &c); err != nil {
 		return err
-	}
-	// Generate REALITY keys + short id locally (private key stays here).
-	if c.RealityPrivateKey == "" || c.RealityPublicKey == "" {
-		kp, kErr := realitykeys.Generate()
-		if kErr != nil {
-			return fmt.Errorf("reality keys: %w", kErr)
-		}
-		c.RealityPrivateKey, c.RealityPublicKey = kp.Private, kp.Public
-	}
-	if len(c.RealityShortIDs) == 0 {
-		sid, sErr := realitykeys.ShortID()
-		if sErr != nil {
-			return fmt.Errorf("reality short id: %w", sErr)
-		}
-		c.RealityShortIDs = []string{sid}
 	}
 	// Ensure at least one client (yourself).
 	if len(c.Clients) == 0 {
@@ -126,7 +113,11 @@ func cmdSetup(r *bufio.Reader) error {
 	}
 
 	fmt.Println("\nsaved:", path)
-	fmt.Printf("REALITY domain: %s  (short id %s)\n", firstOr(c.RealityServerName), first(c.RealityShortIDs))
+	if c.CamouflageTLS() {
+		fmt.Printf("TLS site: %s  (Let's Encrypt%s)\n", c.TLSHost(), stagingSuffix())
+	} else {
+		fmt.Printf("REALITY domain: %s  (short id %s)\n", firstOr(c.RealityServerName), first(c.RealityShortIDs))
+	}
 
 	// Final step: install + start the background service so the node runs on boot.
 	// Still available on its own via 'service install'. Needs admin/root, so a
@@ -176,7 +167,7 @@ func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
 	fmt.Println("\nFriends connect INBOUND to this machine, so you must forward one TCP")
 	fmt.Println("port on your router to it. Pick that port now:")
 	c.Port = askPort(r, c.Port)
-	printPortForwardHelp(c.Port, ip, localIPv4s())
+	printPortForwardHelp(ip, localIPv4s(), c.Port)
 
 	// 3. Self-ping that port from the public IP (temp listener stands in for the
 	//    not-yet-running node).
@@ -197,60 +188,102 @@ func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
 	return ip
 }
 
-// configureExtraProtocols asks whether to also expose Trojan (REALITY) and/or
-// Shadowsocks-2022, each on its own dedicated TCP port (one port = one
-// protocol). VLESS+REALITY on c.Port is always on. Generates the Shadowsocks
-// server key on first enable.
+// Recommended port ranges for the optional protocols (a random free port in the
+// range is offered as the default). VLESS keeps its 443/8443 choice.
+const (
+	trojanPortLo = 32000
+	trojanPortHi = 35000
+	ssPortLo     = 35000
+	ssPortHi     = 38000
+)
+
+// configureExtraProtocols asks, per protocol, whether to also expose Trojan,
+// Shadowsocks (classic), and/or Shadowsocks-2022 (a y/n question each), and if so
+// on which dedicated TCP port (one port = one protocol). VLESS on c.Port is
+// always on. Generates the Shadowsocks-2022 server key on first enable.
 func configureExtraProtocols(r *bufio.Reader, c *config.AppConfig) {
-	fmt.Println("\nExtra protocols (optional). Each needs its OWN forwarded TCP port,")
-	fmt.Println("separate from the VLESS port above. Type 'no' to disable one.")
+	fmt.Println("\nExtra protocols (optional). One TCP port hosts ONE protocol, so each")
+	fmt.Println("protocol you enable needs its OWN dedicated TCP port, SEPARATE from the")
+	fmt.Println("VLESS port above — and you must forward/open that port too.")
 
-	c.TrojanPort = askExtraPort(r, "Trojan+REALITY port", c.TrojanPort, c.Port)
+	// Trojan shares VLESS's camouflage (REALITY or TLS), chosen later.
+	if askYesNo(r, "\nEnable Trojan?", c.TrojanPort != 0) {
+		rec := recommendPortInRange(trojanPortLo, trojanPortHi, c.Port)
+		c.TrojanPort = askProtocolPort(r, "  Trojan port", c.TrojanPort, rec, c.Port)
+	} else {
+		c.TrojanPort = 0
+	}
 
-	c.SSPort = askExtraPort(r, "Shadowsocks-2022 port (no REALITY masking)", c.SSPort, c.Port, c.TrojanPort)
-	if c.SSPort != 0 && c.SSServerKey == "" {
-		if k, err := config.NewSSServerKey(); err == nil {
-			c.SSServerKey = k
-		} else {
-			fmt.Println("  ! could not generate Shadowsocks key — disabling SS:", err)
-			c.SSPort = 0
+	// Shadowsocks (classic chacha20-ietf-poly1305) — broad client support.
+	if askYesNo(r, "Enable Shadowsocks? (chacha20-ietf-poly1305, broad support)", c.SSPort != 0) {
+		rec := recommendPortInRange(ssPortLo, ssPortHi, c.Port, c.TrojanPort)
+		c.SSPort = askProtocolPort(r, "  Shadowsocks port", c.SSPort, rec, c.Port, c.TrojanPort)
+	} else {
+		c.SSPort = 0
+	}
+
+	// Shadowsocks-2022 — stronger, but rejected by many clients; separate inbound.
+	if askYesNo(r, "Also enable Shadowsocks-2022? (stronger; fewer clients accept it)", c.SS2022Port != 0) {
+		rec := recommendPortInRange(ssPortLo, ssPortHi, c.Port, c.TrojanPort, c.SSPort)
+		c.SS2022Port = askProtocolPort(r, "  Shadowsocks-2022 port", c.SS2022Port, rec, c.Port, c.TrojanPort, c.SSPort)
+		if c.SS2022Port != 0 && c.SSServerKey == "" {
+			if k, err := config.NewSSServerKey(); err == nil {
+				c.SSServerKey = k
+			} else {
+				fmt.Println("  ! could not generate Shadowsocks-2022 key — disabling:", err)
+				c.SS2022Port = 0
+			}
 		}
+	} else {
+		c.SS2022Port = 0
 	}
 
 	if extra := c.PublicInbounds(); len(extra) > 1 {
-		fmt.Println("\n>>> Forward these extra TCP port(s) on your router too:")
+		fmt.Println("\n>>> Forward/open these extra TCP port(s) — one per protocol:")
 		for _, ib := range extra {
 			if ib.Port != c.Port {
 				fmt.Printf(">>>   TCP %d  (%s)\n", ib.Port, ib.Protocol)
 			}
 		}
+		fmt.Println(">>> On an OpenWRT edge router, open them on the WAN firewall by re-running")
+		fmt.Println(">>> the installer with all ports, e.g. PORT=\"8443 8444 9443\" ./install-openwrt.sh")
 	}
 }
 
-// askExtraPort asks for an optional protocol port. Enter keeps the current
-// value; 'no' disables it (0). The chosen port must not collide with any of the
-// reserved ports (the other enabled inbounds).
-func askExtraPort(r *bufio.Reader, q string, current int, reserved ...int) int {
-	def := "no"
-	if current != 0 {
-		def = strconv.Itoa(current)
+// askProtocolPort asks for a protocol's TCP port, the same style as the VLESS
+// port prompt. On a fresh setup (current == 0) it pre-fills `recommended` (a free
+// port the caller already picked, e.g. random-in-range); an existing value is
+// kept as the default and never bumped, so re-running setup while the node holds
+// that port doesn't move it. Collisions with reserved ports are rejected
+// (re-asks); a busy-looking port only warns, without blocking.
+func askProtocolPort(r *bufio.Reader, label string, current, recommended int, reserved ...int) int {
+	def := current
+	if def == 0 {
+		def = recommended
 	}
-	v := strings.TrimSpace(ask(r, q+" ('no' = disabled)", def))
-	if isNo(v) || v == "" {
-		return 0
+	for {
+		v := strings.TrimSpace(ask(r, label+" (forward this TCP port)", strconv.Itoa(def)))
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			fmt.Println("  ! invalid port — using", def)
+			n = def
+		}
+		if collidesPort(n, reserved...) {
+			fmt.Printf("  ! port %d is already used by another protocol here — pick another.\n", n)
+			continue
+		}
+		return warnIfBusy(n)
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 || n > 65535 {
-		fmt.Println("  ! invalid port — leaving disabled")
-		return 0
-	}
+}
+
+// collidesPort reports whether n equals any non-zero reserved port.
+func collidesPort(n int, reserved ...int) bool {
 	for _, rp := range reserved {
 		if rp != 0 && n == rp {
-			fmt.Printf("  ! port %d is already used by another protocol — leaving disabled\n", n)
-			return 0
+			return true
 		}
 	}
-	return n
+	return false
 }
 
 // newNodeID returns a short, globally-unique, sortable id (xid) used as the
@@ -268,6 +301,118 @@ func normalizeDuckDNSLabel(s string) string {
 	s = strings.TrimSuffix(s, "/")
 	s = strings.TrimSuffix(s, ".duckdns.org")
 	return strings.TrimSpace(s)
+}
+
+// configureCamouflage asks which masquerade the VLESS/Trojan inbounds use and
+// sets up the chosen mode:
+//   - reality: scan for a live TLS1.3+h2 site to borrow, generate REALITY keys.
+//   - tls:     masquerade behind the node's own website; obtain a Let's Encrypt
+//     certificate via DNS-01 (DuckDNS). No domain scan is performed.
+//
+// TLS mode needs a DuckDNS domain (for both the certificate and the DNS-01
+// challenge); without one it falls back to REALITY.
+func configureCamouflage(r *bufio.Reader, c *config.AppConfig) error {
+	fmt.Println("\nCamouflage for VLESS/Trojan:")
+	fmt.Println("  reality — borrow a stranger's TLS site (no domain/cert needed)")
+	fmt.Println("  tls     — masquerade behind YOUR OWN website on your domain. The node")
+	fmt.Println("            raises the website itself (you don't create or host anything)")
+	fmt.Println("            and gets a Let's Encrypt certificate automatically.")
+
+	def := config.CamouflageReality
+	if c.CamouflageTLS() {
+		def = config.CamouflageTLSMode
+	}
+	mode := strings.ToLower(strings.TrimSpace(ask(r, "Camouflage mode (reality/tls)", def)))
+
+	if mode == config.CamouflageTLSMode {
+		if c.DuckDNSHost() == "" {
+			fmt.Println("  ! TLS mode needs a DuckDNS domain (token + subdomain) for the")
+			fmt.Println("    certificate and DNS-01 challenge — none configured. Using REALITY.")
+		} else {
+			c.Camouflage = config.CamouflageTLSMode
+			return configureTLS(r, c)
+		}
+	}
+
+	// REALITY (default / fallback).
+	c.Camouflage = config.CamouflageReality
+	if err := chooseRealityDomain(r, c); err != nil {
+		return err
+	}
+	// Generate REALITY keys + short id locally (private key stays here).
+	if c.RealityPrivateKey == "" || c.RealityPublicKey == "" {
+		kp, kErr := realitykeys.Generate()
+		if kErr != nil {
+			return fmt.Errorf("reality keys: %w", kErr)
+		}
+		c.RealityPrivateKey, c.RealityPublicKey = kp.Private, kp.Public
+	}
+	if len(c.RealityShortIDs) == 0 {
+		sid, sErr := realitykeys.ShortID()
+		if sErr != nil {
+			return fmt.Errorf("reality short id: %w", sErr)
+		}
+		c.RealityShortIDs = []string{sid}
+	}
+	return nil
+}
+
+// leAgreementURL is the Let's Encrypt Subscriber Agreement shown before we
+// register an ACME account on the operator's behalf.
+const leAgreementURL = "https://letsencrypt.org/repository/"
+
+// configureTLS collects the Let's Encrypt account registration data interactively
+// (contact email + Subscriber Agreement consent) and obtains the certificate now,
+// so setup fails loudly if DNS-01 isn't working (rather than at first start). The
+// certificate is for the node's own DuckDNS domain; no domain scan is done. The
+// CA environment (staging vs production) is fixed at build time, not asked here.
+func configureTLS(r *bufio.Reader, c *config.AppConfig) error {
+	fmt.Printf("\n>>> Masquerading behind your own site at https://%s\n", c.TLSHost())
+	fmt.Println(">>> (the node hosts this site itself — nothing to set up separately)")
+
+	// If a certificate for this exact domain is already stored and still valid
+	// (same CA environment, >30 days to expiry), reuse it — no re-request, and no
+	// need to ask the Let's Encrypt account questions again.
+	if dir, err := dataDir(); err == nil && acme.CertValid(dir, c.TLSHost()) {
+		fmt.Printf(">>> certificate for %s is still valid — reusing it (no new request).\n", c.TLSHost())
+		return nil
+	}
+
+	fmt.Printf(">>> Certificate CA: Let's Encrypt %s\n", leEnv())
+
+	// Account registration data Let's Encrypt asks for: a contact email (for
+	// expiry / urgent notices) and acceptance of the Subscriber Agreement.
+	fmt.Println("\nLet's Encrypt account registration:")
+	c.ACMEEmail = askClearable(r, "  Contact email (recommended, for expiry & security notices)", c.ACMEEmail)
+
+	fmt.Printf("  Subscriber Agreement: %s\n", leAgreementURL)
+	if isNo(ask(r, "  Do you accept the Let's Encrypt Subscriber Agreement? (yes/no)", "yes")) {
+		return fmt.Errorf("TLS camouflage needs the Let's Encrypt agreement accepted — aborting")
+	}
+	c.ACMEAgreeTOS = true
+
+	fmt.Printf("\nobtaining a %s certificate for %s (DNS-01 via DuckDNS)...\n", leEnv(), c.TLSHost())
+	if err := provisionTLS(context.Background(), *c); err != nil {
+		return fmt.Errorf("could not obtain certificate: %w\n"+
+			"  check the DuckDNS token/subdomain and try again", err)
+	}
+	fmt.Printf("  ok — certificate stored in decenzed-data; the node renews it automatically.\n")
+	return nil
+}
+
+// leEnv names the build-fixed Let's Encrypt environment for display.
+func leEnv() string {
+	if acme.IsStaging() {
+		return "STAGING (test)"
+	}
+	return "production"
+}
+
+func stagingSuffix() string {
+	if acme.IsStaging() {
+		return " STAGING"
+	}
+	return ""
 }
 
 // chooseRealityDomain scans the node's /24 neighbourhood then a seed list for a

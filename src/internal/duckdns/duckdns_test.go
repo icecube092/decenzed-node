@@ -76,3 +76,49 @@ func TestUpdateRequiresDomainAndToken(t *testing.T) {
 		t.Error("expected error for empty token")
 	}
 }
+
+func TestSetTXTSendsValue(t *testing.T) {
+	var got url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		w.Write([]byte("OK"))
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL+"/update")
+
+	if err := SetTXT(context.Background(), "dom", "tok", "challenge-value"); err != nil {
+		t.Fatalf("SetTXT: %v", err)
+	}
+	if got.Get("domains") != "dom" || got.Get("token") != "tok" {
+		t.Errorf("domains/token = %q/%q", got.Get("domains"), got.Get("token"))
+	}
+	if got.Get("txt") != "challenge-value" {
+		t.Errorf("txt = %q", got.Get("txt"))
+	}
+}
+
+func TestClearTXTSetsClearFlag(t *testing.T) {
+	var got url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		w.Write([]byte("OK"))
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL+"/update")
+
+	if err := ClearTXT(context.Background(), "dom", "tok"); err != nil {
+		t.Fatalf("ClearTXT: %v", err)
+	}
+	if got.Get("clear") != "true" {
+		t.Errorf("clear = %q, want true", got.Get("clear"))
+	}
+}
+
+func TestTXTRequiresDomainAndToken(t *testing.T) {
+	if err := SetTXT(context.Background(), "", "tok", "v"); err == nil {
+		t.Error("expected error for empty domain")
+	}
+	if err := ClearTXT(context.Background(), "dom", ""); err == nil {
+		t.Error("expected error for empty token")
+	}
+}
