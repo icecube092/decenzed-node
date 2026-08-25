@@ -3,23 +3,61 @@
 // xray JSON directly; this is the single place that maps policy onto xray
 // inbound / routing / policy. Structs mirror xray-core's config schema
 // approximately — extend field-by-field as more of xray is exercised.
+//
+// The node can expose several protocols at once, each as its own inbound on its
+// own port (one port hosts one protocol): VLESS+REALITY, Trojan+REALITY, and
+// Shadowsocks-2022. All inbounds share the same routing / policy / stats, and
+// every client is keyed by the same email (its UUID) so per-user stats aggregate
+// across whichever protocol(s) that user connects with.
 package xraygen
 
 import "encoding/json"
 
 // Input is the subset of app-config relevant to xray generation.
 type Input struct {
-	Port            int
-	ListenAddr      string   // "" = all interfaces; "127.0.0.1" when behind the throttle proxy
-	UUIDs           []string // active client credentials
-	RealityDest     string   // e.g. "www.microsoft.com:443"
-	RealityNames    []string // serverNames the node impersonates
-	RealityPrivKey  string
-	RealityShortIDs []string
+	// Inbounds is the ordered list of listeners to emit (VLESS first, by
+	// convention). At least one is expected.
+	Inbounds []InboundSpec
+
+	// Shared routing / policy (applies to every inbound).
 	BlockBittorrent bool
 	DomainAllow     []string // if non-empty: allow ONLY these, block the rest
 	DomainDeny      []string // always blocked
 	StatsEnabled    bool     // per-user stats for metering
+}
+
+// InboundSpec describes one listener to generate.
+type InboundSpec struct {
+	Protocol   string       // config.ProtoVLESS | ProtoTrojan | ProtoShadowsocks
+	Port       int          // listen port
+	ListenAddr string       // "" = all interfaces; "127.0.0.1" when behind the throttle proxy
+	Clients    []ClientCred // per-user credentials
+
+	// REALITY camouflage — set for VLESS/Trojan, nil for Shadowsocks.
+	Reality *RealitySpec
+
+	// Shadowsocks-2022 only.
+	SSMethod    string
+	SSServerKey string
+}
+
+// ClientCred is one user's credential for an inbound. Which field is used
+// depends on the protocol: ID for VLESS (with Vision flow), Password for Trojan
+// and Shadowsocks (the SS per-user PSK). Email keys the per-user stats counter
+// and is the client's UUID for every protocol.
+type ClientCred struct {
+	ID       string
+	Password string
+	Email    string
+}
+
+// RealitySpec carries the REALITY camouflage parameters shared by the REALITY
+// inbounds.
+type RealitySpec struct {
+	Dest     string   // e.g. "www.microsoft.com:443"
+	Names    []string // serverNames the node impersonates
+	PrivKey  string
+	ShortIDs []string
 }
 
 // ---- xray-core config schema (minimal subset) ----
@@ -113,45 +151,17 @@ type policySystem struct {
 //
 // Without an allow-list the default is permissive (allow all except deny/bt).
 func Generate(in Input) *Config {
-	clients := make([]map[string]any, 0, len(in.UUIDs))
-	for _, id := range in.UUIDs {
-		// email == id so xray's per-user stats counter is keyed by the UUID
-		// ("user>>>{email}>>>traffic>>>..."), which the runtime looks up.
-		clients = append(clients, map[string]any{"id": id, "flow": "xtls-rprx-vision", "email": id})
-	}
-	settings, _ := json.Marshal(map[string]any{
-		"clients":    clients,
-		"decryption": "none",
-	})
-
 	cfg := &Config{
 		Log: &logCfg{Loglevel: "warning"},
-		Inbounds: []inbound{{
-			Tag:      "in",
-			Listen:   in.ListenAddr,
-			Port:     in.Port,
-			Protocol: "vless",
-			Settings: settings,
-			StreamSettings: &streamSettings{
-				Network:  "tcp",
-				Security: "reality",
-				RealitySettings: &realitySettings{
-					Dest:        in.RealityDest,
-					ServerNames: in.RealityNames,
-					PrivateKey:  in.RealityPrivKey,
-					ShortIds:    in.RealityShortIDs,
-				},
-			},
-			// Sniffing lets routing match the real protocol/destination even
-			// though the client tunnels it — required to block bittorrent and
-			// to apply domain rules.
-			Sniffing: &sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}},
-		}},
 		Outbounds: []outbound{
 			{Tag: "direct", Protocol: "freedom"},
 			{Tag: "block", Protocol: "blackhole"},
 		},
 		Routing: &routingCfg{DomainStrategy: "AsIs"},
+	}
+
+	for _, spec := range in.Inbounds {
+		cfg.Inbounds = append(cfg.Inbounds, buildInbound(spec))
 	}
 
 	var rules []rule
@@ -176,6 +186,63 @@ func Generate(in Input) *Config {
 		}
 	}
 	return cfg
+}
+
+// buildInbound renders one protocol listener. Sniffing is enabled on every
+// inbound so routing can match the real protocol/destination even though the
+// client tunnels it — required to block bittorrent and to apply domain rules.
+func buildInbound(spec InboundSpec) inbound {
+	ib := inbound{
+		Tag:      spec.Protocol + "-in",
+		Listen:   spec.ListenAddr,
+		Port:     spec.Port,
+		Protocol: spec.Protocol,
+		Settings: buildSettings(spec),
+		Sniffing: &sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}},
+	}
+	if spec.Reality != nil {
+		ib.StreamSettings = &streamSettings{
+			Network:  "tcp",
+			Security: "reality",
+			RealitySettings: &realitySettings{
+				Dest:        spec.Reality.Dest,
+				ServerNames: spec.Reality.Names,
+				PrivateKey:  spec.Reality.PrivKey,
+				ShortIds:    spec.Reality.ShortIDs,
+			},
+		}
+	}
+	return ib
+}
+
+// buildSettings renders the protocol-specific "settings" object.
+func buildSettings(spec InboundSpec) json.RawMessage {
+	var m map[string]any
+	switch spec.Protocol {
+	case "vless":
+		clients := make([]map[string]any, 0, len(spec.Clients))
+		for _, cl := range spec.Clients {
+			// email == UUID so xray's per-user stats counter is keyed by the UUID
+			// ("user>>>{email}>>>traffic>>>..."), which the runtime looks up.
+			clients = append(clients, map[string]any{"id": cl.ID, "flow": "xtls-rprx-vision", "email": cl.Email})
+		}
+		m = map[string]any{"clients": clients, "decryption": "none"}
+	case "trojan":
+		// Trojan has no XTLS flow (Vision is VLESS-only); it rides REALITY plain.
+		clients := make([]map[string]any, 0, len(spec.Clients))
+		for _, cl := range spec.Clients {
+			clients = append(clients, map[string]any{"password": cl.Password, "email": cl.Email})
+		}
+		m = map[string]any{"clients": clients}
+	case "shadowsocks":
+		clients := make([]map[string]any, 0, len(spec.Clients))
+		for _, cl := range spec.Clients {
+			clients = append(clients, map[string]any{"password": cl.Password, "email": cl.Email})
+		}
+		m = map[string]any{"method": spec.SSMethod, "password": spec.SSServerKey, "clients": clients, "network": "tcp,udp"}
+	}
+	b, _ := json.Marshal(m)
+	return b
 }
 
 // JSON renders the config as indented xray-core JSON.

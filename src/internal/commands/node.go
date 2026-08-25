@@ -61,14 +61,19 @@ func runNode(ctx context.Context) error {
 	}
 
 	if c.MaxUserBps > 0 {
-		inner := innerPortFor(c.Port)
-		px := throttle.NewProxy(fmt.Sprintf(":%d", c.Port), fmt.Sprintf("127.0.0.1:%d", inner), c.MaxUserBps)
-		go func() {
-			log.Printf("throttle: per-user cap %.0f Mbit/s, proxy :%d -> 127.0.0.1:%d", mbit(c.MaxUserBps), c.Port, inner)
-			if err := px.Run(ctx); err != nil {
-				log.Println("throttle proxy exited:", err)
-			}
-		}()
+		// One throttle proxy per public inbound: xray listens on 127.0.0.1:inner
+		// (see inputFromConfig) and each proxy fronts the real public port.
+		for _, ib := range c.PublicInbounds() {
+			inner := innerPortFor(ib.Port)
+			px := throttle.NewProxy(fmt.Sprintf(":%d", ib.Port), fmt.Sprintf("127.0.0.1:%d", inner), c.MaxUserBps)
+			proto, pub := ib.Protocol, ib.Port
+			go func() {
+				log.Printf("throttle: per-user cap %.0f Mbit/s, %s proxy :%d -> 127.0.0.1:%d", mbit(c.MaxUserBps), proto, pub, inner)
+				if err := px.Run(ctx); err != nil {
+					log.Println("throttle proxy exited:", err)
+				}
+			}()
+		}
 	}
 
 	var lastSnap traffic.Snapshot
@@ -167,23 +172,51 @@ func updateDuckDNS(ctx context.Context, c config.AppConfig, lastIP *string) {
 
 func inputFromConfig(c config.AppConfig) xraygen.Input {
 	eff := domainlist.Policy{OverrideAllow: c.DomainAllow, OverrideDeny: c.DomainDeny}.Resolve()
-	in := xraygen.Input{
-		Port:            c.Port,
-		UUIDs:           c.UUIDs(),
-		RealityDest:     c.RealityDest,
-		RealityNames:    c.RealityServerName,
-		RealityPrivKey:  c.RealityPrivateKey,
-		RealityShortIDs: c.RealityShortIDs,
+
+	// REALITY params are shared by the VLESS/Trojan inbounds.
+	reality := &xraygen.RealitySpec{
+		Dest:     c.RealityDest,
+		Names:    c.RealityServerName,
+		PrivKey:  c.RealityPrivateKey,
+		ShortIDs: c.RealityShortIDs,
+	}
+
+	var specs []xraygen.InboundSpec
+	for _, ib := range c.PublicInbounds() {
+		port, listen := ib.Port, ""
+		// Behind the per-user throttle, xray listens on localhost and the proxy
+		// fronts the real port (see runNode).
+		if c.MaxUserBps > 0 {
+			port, listen = innerPortFor(ib.Port), "127.0.0.1"
+		}
+		spec := xraygen.InboundSpec{Protocol: ib.Protocol, Port: port, ListenAddr: listen}
+		switch ib.Protocol {
+		case config.ProtoVLESS:
+			spec.Reality = reality
+			for _, cl := range c.Clients {
+				spec.Clients = append(spec.Clients, xraygen.ClientCred{ID: cl.UUID, Email: cl.UUID})
+			}
+		case config.ProtoTrojan:
+			spec.Reality = reality
+			for _, cl := range c.Clients {
+				spec.Clients = append(spec.Clients, xraygen.ClientCred{Password: cl.UUID, Email: cl.UUID})
+			}
+		case config.ProtoShadowsocks:
+			spec.SSMethod, spec.SSServerKey = config.SSMethod, c.SSServerKey
+			for _, cl := range c.Clients {
+				spec.Clients = append(spec.Clients, xraygen.ClientCred{Password: config.SSUserPSK(cl.UUID), Email: cl.UUID})
+			}
+		}
+		specs = append(specs, spec)
+	}
+
+	return xraygen.Input{
+		Inbounds:        specs,
 		BlockBittorrent: c.BlocksBittorrent(),
 		DomainAllow:     eff.Allow,
 		DomainDeny:      eff.Deny,
 		StatsEnabled:    true,
 	}
-	if c.MaxUserBps > 0 {
-		in.Port = innerPortFor(c.Port)
-		in.ListenAddr = "127.0.0.1"
-	}
-	return in
 }
 
 func innerPortFor(p int) int {

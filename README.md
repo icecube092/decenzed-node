@@ -80,6 +80,18 @@ IP across many customers) inbound connections can't reach you — ask your ISP f
 a public/"white" IP, or front the node with a cheap VPS. `decenzed-node check`
 detects CGNAT/private IPs and warns you.
 
+### Extra protocols (Trojan / Shadowsocks)
+
+VLESS+REALITY is always on. `setup` also lets you optionally enable **Trojan**
+(same REALITY camouflage, no XTLS flow) and **Shadowsocks-2022**
+(`2022-blake3-aes-128-gcm`, no TLS masking — a distinct, less-stealthy traffic
+type). One TCP port hosts one protocol, so each enabled protocol needs its **own
+forwarded port**. `decenzed-node link` prints a share link + sing-box outbound
+for every enabled protocol, per client. Per-user speed caps and traffic stats
+apply across all of them (each client is metered by a single identity regardless
+of which protocol it connects with). On OpenWRT open the extra WAN ports with
+`PORT="8443 9443" ./install-openwrt.sh` (space- or comma-separated).
+
 ### Supported architectures
 
 Every release ships prebuilt static binaries (pure Go, `CGO_ENABLED=0`, no libc

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,9 @@ func cmdSetup(r *bufio.Reader) error {
 
 	// Network readiness first: public IP -> port -> self-ping -> speed test.
 	detectedIP := networkPrecheck(r, &c)
+
+	// Optional extra protocols, each on its own forwarded port.
+	configureExtraProtocols(r, &c)
 
 	if v := ask(r, "Blocked protocols (comma-separated, or 'no' to block none)", strings.Join(orDefault(c.BlockProtocols, []string{"bittorrent"}), ",")); v != "" {
 		if isNo(v) {
@@ -191,6 +195,62 @@ func networkPrecheck(r *bufio.Reader, c *config.AppConfig) string {
 	runSpeedTest()
 	fmt.Println()
 	return ip
+}
+
+// configureExtraProtocols asks whether to also expose Trojan (REALITY) and/or
+// Shadowsocks-2022, each on its own dedicated TCP port (one port = one
+// protocol). VLESS+REALITY on c.Port is always on. Generates the Shadowsocks
+// server key on first enable.
+func configureExtraProtocols(r *bufio.Reader, c *config.AppConfig) {
+	fmt.Println("\nExtra protocols (optional). Each needs its OWN forwarded TCP port,")
+	fmt.Println("separate from the VLESS port above. Type 'no' to disable one.")
+
+	c.TrojanPort = askExtraPort(r, "Trojan+REALITY port", c.TrojanPort, c.Port)
+
+	c.SSPort = askExtraPort(r, "Shadowsocks-2022 port (no REALITY masking)", c.SSPort, c.Port, c.TrojanPort)
+	if c.SSPort != 0 && c.SSServerKey == "" {
+		if k, err := config.NewSSServerKey(); err == nil {
+			c.SSServerKey = k
+		} else {
+			fmt.Println("  ! could not generate Shadowsocks key — disabling SS:", err)
+			c.SSPort = 0
+		}
+	}
+
+	if extra := c.PublicInbounds(); len(extra) > 1 {
+		fmt.Println("\n>>> Forward these extra TCP port(s) on your router too:")
+		for _, ib := range extra {
+			if ib.Port != c.Port {
+				fmt.Printf(">>>   TCP %d  (%s)\n", ib.Port, ib.Protocol)
+			}
+		}
+	}
+}
+
+// askExtraPort asks for an optional protocol port. Enter keeps the current
+// value; 'no' disables it (0). The chosen port must not collide with any of the
+// reserved ports (the other enabled inbounds).
+func askExtraPort(r *bufio.Reader, q string, current int, reserved ...int) int {
+	def := "no"
+	if current != 0 {
+		def = strconv.Itoa(current)
+	}
+	v := strings.TrimSpace(ask(r, q+" ('no' = disabled)", def))
+	if isNo(v) || v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 65535 {
+		fmt.Println("  ! invalid port — leaving disabled")
+		return 0
+	}
+	for _, rp := range reserved {
+		if rp != 0 && n == rp {
+			fmt.Printf("  ! port %d is already used by another protocol — leaving disabled\n", n)
+			return 0
+		}
+	}
+	return n
 }
 
 // newNodeID returns a short, globally-unique, sortable id (xid) used as the

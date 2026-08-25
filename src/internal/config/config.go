@@ -8,7 +8,10 @@
 package config
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -44,8 +47,20 @@ type AppConfig struct {
 	DuckDNSSubdomain string `json:"duckdns_domain,omitempty"` // the subdomain you registered on duckdns.org
 
 	// Networking.
-	Port     int    `json:"port"`      // inbound TCP port (forward this on your router)
+	Port     int    `json:"port"`      // VLESS+REALITY inbound TCP port (forward this on your router)
 	PublicIP string `json:"public_ip"` // used in share links when DuckDNS is off; auto-detected if empty
+
+	// Extra protocols (optional). Each runs as its own xray inbound on its own
+	// port — one port can host only one protocol, so every enabled protocol
+	// needs its own forwarded TCP port. A 0 port means the protocol is disabled.
+	//   - Trojan shares the same REALITY camouflage as VLESS (no XTLS flow: Vision
+	//     is VLESS-only). Its per-client password is the client UUID.
+	//   - Shadowsocks uses SS-2022 (2022-blake3-aes-128-gcm) with per-user keys;
+	//     it has NO REALITY/TLS masking — it is a distinct, less-stealthy traffic
+	//     type. SSServerKey is the server-wide PSK (base64), generated at setup.
+	TrojanPort  int    `json:"trojan_port,omitempty"`
+	SSPort      int    `json:"ss_port,omitempty"`
+	SSServerKey string `json:"ss_server_key,omitempty"`
 
 	// Policy.
 	MaxUserBps     float64  `json:"max_user_bps"`    // per-user speed cap (bytes/sec); 0 = off
@@ -64,6 +79,60 @@ type AppConfig struct {
 
 	// Clients — your own + friends' credentials. Each maps to one share link.
 	Clients []Client `json:"clients"`
+}
+
+// Protocol identifiers used across the app (xray inbound "protocol" values).
+const (
+	ProtoVLESS       = "vless"
+	ProtoTrojan      = "trojan"
+	ProtoShadowsocks = "shadowsocks"
+)
+
+// SSMethod is the Shadowsocks-2022 AEAD method we use. Its key length is 16
+// bytes, so both the server PSK and every per-user PSK are base64 of 16 bytes.
+const SSMethod = "2022-blake3-aes-128-gcm"
+
+// ssKeyLen is the raw key length (bytes) for SSMethod.
+const ssKeyLen = 16
+
+// NewSSServerKey generates a random Shadowsocks-2022 server PSK (base64).
+func NewSSServerKey() (string, error) {
+	b := make([]byte, ssKeyLen)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+// SSUserPSK derives a client's Shadowsocks-2022 per-user PSK deterministically
+// from its UUID, so no extra per-client secret needs to be stored. The server
+// (xray inbound) and the share link both derive it the same way.
+func SSUserPSK(uuid string) string {
+	sum := sha256.Sum256([]byte("decenzed-ss-2022|" + uuid))
+	return base64.StdEncoding.EncodeToString(sum[:ssKeyLen])
+}
+
+// Inbound is one enabled listener: a protocol on a public TCP port.
+type Inbound struct {
+	Protocol string
+	Port     int
+}
+
+// PublicInbounds lists the protocol listeners this node exposes, in a stable
+// order (VLESS first). Only enabled ones (port != 0) are returned. This is the
+// single source of truth for both xray generation and the throttle proxies.
+func (c AppConfig) PublicInbounds() []Inbound {
+	var out []Inbound
+	if c.Port != 0 {
+		out = append(out, Inbound{Protocol: ProtoVLESS, Port: c.Port})
+	}
+	if c.TrojanPort != 0 {
+		out = append(out, Inbound{Protocol: ProtoTrojan, Port: c.TrojanPort})
+	}
+	if c.SSPort != 0 {
+		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SSPort})
+	}
+	return out
 }
 
 // Default returns a config populated with sensible defaults.

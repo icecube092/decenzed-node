@@ -76,6 +76,10 @@ asset_key() { # strip "decenzed-node-" prefix, turn '-' into '_'
 open_firewall() {
 	[ -n "${NO_FIREWALL:-}" ] && { say "firewall:     skipped (NO_FIREWALL set)"; return 0; }
 	command -v uci >/dev/null 2>&1 || { say "firewall:     uci not found — open TCP $PORT yourself"; return 0; }
+	# Accept a comma- or space-separated list so extra protocols (Trojan/SS) each
+	# get their WAN port opened, e.g. PORT="8443 9443". fw3/fw4 dest_port takes a
+	# space-separated list of ports.
+	PORT=$(printf '%s' "$PORT" | tr ',' ' ')
 	name="Allow-decenzed-node"
 	sec=$(uci show firewall 2>/dev/null | grep -F ".name='$name'" | head -n1 | cut -d. -f1,2)
 	if [ -n "$sec" ]; then

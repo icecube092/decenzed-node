@@ -118,18 +118,48 @@ func TestLinkFor(t *testing.T) {
 		RealityPublicKey:  "PUBKEY",
 		RealityShortIDs:   []string{"beef"},
 	}
-	link := linkFor(c, config.Client{UUID: "uuid-1", Name: "alice"}, "host.example")
+	ib := config.Inbound{Protocol: config.ProtoVLESS, Port: 8443}
+	link := clientLink(c, config.Client{UUID: "uuid-1", Name: "alice"}, "host.example", ib)
 	for _, want := range []string{
 		"vless://uuid-1@host.example:8443?",
 		"security=reality",
 		"sni=example.com",
 		"pbk=PUBKEY",
 		"sid=beef",
+		"flow=xtls-rprx-vision",
 		"#alice",
 	} {
 		if !strings.Contains(link, want) {
 			t.Errorf("link %q missing %q", link, want)
 		}
+	}
+}
+
+func TestClientLinkTrojanAndSS(t *testing.T) {
+	c := config.AppConfig{
+		Port:              443,
+		TrojanPort:        8443,
+		SSPort:            9443,
+		SSServerKey:       "c2VydmVya2V5MTIzNDU2",
+		RealityServerName: []string{"example.com"},
+		RealityPublicKey:  "PUBKEY",
+		RealityShortIDs:   []string{"beef"},
+	}
+	cl := config.Client{UUID: "uuid-1", Name: "bob"}
+
+	trojan := clientLink(c, cl, "host.example", config.Inbound{Protocol: config.ProtoTrojan, Port: 8443})
+	for _, want := range []string{"trojan://uuid-1@host.example:8443?", "security=reality", "#bob"} {
+		if !strings.Contains(trojan, want) {
+			t.Errorf("trojan link %q missing %q", trojan, want)
+		}
+	}
+	if strings.Contains(trojan, "flow=") {
+		t.Errorf("trojan link must not carry an XTLS flow: %q", trojan)
+	}
+
+	ss := clientLink(c, cl, "host.example", config.Inbound{Protocol: config.ProtoShadowsocks, Port: 9443})
+	if !strings.HasPrefix(ss, "ss://") || !strings.Contains(ss, "@host.example:9443#bob") {
+		t.Errorf("unexpected ss link: %q", ss)
 	}
 }
 
@@ -140,7 +170,8 @@ func TestSingboxOutbound(t *testing.T) {
 		RealityPublicKey:  "PUBKEY",
 		RealityShortIDs:   []string{"beef"},
 	}
-	out := singboxOutbound(c, config.Client{UUID: "uuid-1", Name: "alice"}, "host.example")
+	ib := config.Inbound{Protocol: config.ProtoVLESS, Port: 8443}
+	out := clientSingbox(c, config.Client{UUID: "uuid-1", Name: "alice"}, "host.example", ib)
 
 	// It must be valid JSON that round-trips to the expected values.
 	var ob struct {
