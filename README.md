@@ -9,6 +9,16 @@
 you hand to friends. There is **no coordination server** — it's fully
 self-contained and open source.
 
+## Features
+- VLESS (XTLS-Vision), Trojan, Shadowsocks classic + Shadowsocks-2022 protocols
+- Two camouflage modes: REALITY, or TLS behind your own auto-hosted website
+- Automatic Let's Encrypt certificates (obtain + renew) for the TLS mode
+- One subscription link per client — apps pull every protocol automatically
+- Per-user speed cap and per-client / per-protocol traffic stats
+- DDNS (DuckDNS) for dynamic IPs
+- Wide architecture support — x86, ARM, MIPS (desktops + OpenWRT routers)
+- Single self-contained binary on embedded xray-core, no coordination server
+
 It offers **two camouflage modes** for VLESS/Trojan (you pick one in `setup`):
 - **REALITY** (default) — scans for a live third-party TLS 1.3 + HTTP/2 site to
   borrow as cover and generates its own REALITY keys. No domain or certificate of
@@ -35,7 +45,12 @@ It offers **two camouflage modes** for VLESS/Trojan (you pick one in `setup`):
   each needs its **own additional** forwarded/opened TCP port. `setup` asks for
   every port the same way and pre-fills a free one (Trojan `32000–35000`,
   Shadowsocks `35000–38000`).
-- Admin/root rights only to install the background **service**.
+- **Admin/root** to install and manage the background **service**. The
+  interactive CLI requests it automatically (see §3); on OpenWRT you already run
+  as root.
+- A **[duckdns.org](https://www.duckdns.org)** subdomain — required for the TLS
+  camouflage mode (certificate + DNS-01), optional otherwise (a stable domain in
+  share links).
 
 ## 2. Get the binary
 Download the prebuilt binary for your OS, or build from source (Go 1.26+):
@@ -144,7 +159,7 @@ matching one.
 
 | Asset | Go arch | Typical OpenWRT targets & CPUs |
 | --- | --- | --- |
-| `decenzed-node-linux-arm64` | arm64 (aarch64) | **Filogic MT798x — Routerich AX3000**, mvebu, ipq807x, bcm27xx |
+| `decenzed-node-linux-arm64` | arm64 (aarch64) | Filogic MT798x — Routerich AX3000, mvebu, ipq807x, bcm27xx |
 | `decenzed-node-linux-armv7` | arm, GOARM=7 | ipq40xx, mvebu (32-bit), sunxi, bcm53xx |
 | `decenzed-node-linux-armv6` | arm, GOARM=6 | bcm2708 / older ARMv6 |
 | `decenzed-node-linux-armv5` | arm, GOARM=5 | kirkwood / older ARMv5 |
@@ -161,23 +176,32 @@ isn't covered, open an issue with the output of `uname -m` and
 
 ## 3. How to run it
 - **Interactive shell** — double-click the `.exe` (Windows) or run with no
-  arguments. A prompt opens where you type commands. **Ctrl+C** leaves the current
-  command and returns to the prompt (it does **not** quit); exit the shell with
-  `exit`/`quit` or **Ctrl+D**.
+  arguments. A prompt opens where you type commands. Type **`q`** to leave the
+  current command (setup, debug, `logs -f`, …) and return to the prompt; exit the
+  shell with `exit`/`quit`/`q` or **Ctrl+D**.
 - **One command** — `decenzed-node <command>`.
 - **Service** — once installed, it runs in the background on boot.
+- **Admin by default** — the interactive CLI re-launches itself elevated
+  (Windows: UAC prompt; Linux/macOS: `sudo`) so service commands just work. On
+  OpenWRT you're already root, so nothing changes. Skip it with
+  `DECENZED_NO_ELEVATE=1`.
 
 ## 4. Setup
 ```bash
 decenzed-node setup
 ```
 The wizard starts with a **network readiness check**, in order:
-1. Detects your **public IP** (warns if it looks like CGNAT).
-2. Asks which **TCP port** to forward, then prints step-by-step **port-forward**
-   instructions for your router.
+1. Detects your **public IP** (warns if it looks like CGNAT) and **auto-detects
+   your country** (used to label proxies, e.g. `RS [VLESS]`).
+2. Picks the **VLESS TCP port** (default **8443**), then prints step-by-step
+   **port-forward** instructions for your router.
 3. **Self-checks** that port from your public IP (it spins up a temporary
    listener, since the node isn't running yet).
 4. Runs a **speed test**.
+
+It then asks a **y/n** for each optional protocol (Trojan, Shadowsocks, and
+Shadowsocks-2022), each on its own port pre-filled with a free one — see the
+[Extra protocols](#extra-protocols-trojan--shadowsocks) section.
 
 Then it asks the policy questions — press **Enter** to keep the value shown in
 `[brackets]`, or type **`no`** to clear/disable it:
@@ -256,7 +280,7 @@ service** so the change takes effect immediately.
 ```bash
 decenzed-node stats                # protocols, per-client/per-inbound traffic, status
 decenzed-node logs                 # tail the log (both app and xray)
-decenzed-node logs xray -f         # follow only xray's logs (Ctrl+C to stop)
+decenzed-node logs xray -f         # follow only xray's logs (type q to stop)
 decenzed-node debug                # toggle verbose logging (all xray logs)
 decenzed-node config node|xray     # inspect app-config / generated xray JSON
 decenzed-node update               # check for a newer version; ask before installing

@@ -10,12 +10,9 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"sync"
 
 	"github.com/kardianos/service"
 )
@@ -45,12 +42,12 @@ func Main() int {
 	return runOneShot(in, os.Args[1:])
 }
 
-// runOneShot runs a single command (non-REPL). A Ctrl+D at a prompt exits with
-// code 130; Ctrl+C uses the default (process terminates).
+// runOneShot runs a single command (non-REPL). Typing 'q' or Ctrl+D at a prompt
+// leaves it with code 130.
 func runOneShot(in *input, args []string) (code int) {
 	defer func() {
 		if r := recover(); r != nil {
-			if r == errEOF || r == errInterrupted {
+			if r == errEOF || r == errQuit {
 				fmt.Fprintln(os.Stderr)
 				code = 130
 				return
@@ -82,7 +79,7 @@ func dispatch(in *input, args []string) error {
 	case "stats":
 		return cmdStats()
 	case "logs":
-		return cmdLogs(args[1:])
+		return cmdLogs(in, args[1:])
 	case "debug":
 		return cmdDebug(in)
 	case "config":
@@ -99,32 +96,14 @@ func dispatch(in *input, args []string) error {
 }
 
 // interactiveCmds take over stdin; in the REPL, entering one prints a mode
-// banner and Ctrl+C returns to the shell rather than quitting the CLI.
+// banner reminding the operator that 'q' returns to the shell.
 var interactiveCmds = map[string]bool{"setup": true, "check": true, "debug": true, "logs": true}
 
-// repl is the interactive shell. Ctrl+C cancels the RUNNING command (or, at the
-// prompt, is a no-op) instead of exiting; the CLI exits only via 'exit'/'quit'
-// or Ctrl+D.
+// repl is the interactive shell. Leave a running command by typing 'q' (back to
+// the prompt); exit the CLI with 'exit'/'quit'/'q' at the prompt, Ctrl+D, or
+// Ctrl+C (which just terminates the process).
 func repl(in *input) int {
 	usage()
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	defer signal.Stop(sig)
-
-	var mu sync.Mutex
-	var cancel context.CancelFunc // non-nil only while a command runs
-	go func() {
-		for range sig {
-			mu.Lock()
-			if cancel != nil {
-				cancel() // abort the running command
-			} else {
-				fmt.Print("\n(type 'exit' or press Ctrl-D to quit)\n")
-			}
-			mu.Unlock()
-		}
-	}()
 
 	for {
 		fmt.Print("\ndecenzed> ")
@@ -138,31 +117,19 @@ func repl(in *input) int {
 			continue
 		}
 		switch args[0] {
-		case "exit", "quit":
+		case "exit", "quit", "q":
 			return 0
 		case "clear", "cls":
 			fmt.Print("\033[H\033[2J")
 			continue
 		}
-		ctx, c := context.WithCancel(context.Background())
-		mu.Lock()
-		cancel = c
-		mu.Unlock()
-		in.setContext(ctx)
-
 		runCommand(in, args)
-
-		mu.Lock()
-		cancel = nil
-		mu.Unlock()
-		in.setContext(context.Background())
-		c()
 	}
 }
 
-// promptLine reads a command line at the shell prompt. The prompt uses a
-// background context so Ctrl+C never cancels it (the signal loop handles it);
-// only Ctrl+D (EOF) ends the shell.
+// promptLine reads a command line at the shell prompt. Only Ctrl+D (EOF) ends
+// the shell; 'q' here is handled as a command word (see repl), not by the
+// answer() interceptor.
 func promptLine(in *input) (line string, eof bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -176,17 +143,17 @@ func promptLine(in *input) (line string, eof bool) {
 	return in.readLine(), false
 }
 
-// runCommand dispatches one command, recovering the Ctrl+C/Ctrl+D unwind so a
-// cancelled interactive command drops back to the shell instead of crashing.
+// runCommand dispatches one command, recovering the 'q'/Ctrl+D unwind so leaving
+// an interactive command drops back to the shell instead of crashing.
 func runCommand(in *input, args []string) {
 	if interactiveCmds[args[0]] {
-		fmt.Printf("— %s (Ctrl+C to return to the shell) —\n", args[0])
+		fmt.Printf("— %s (type 'q' to return to the shell) —\n", args[0])
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			switch r {
-			case errInterrupted:
-				fmt.Println("\n^C — cancelled, back to the shell")
+			case errQuit:
+				fmt.Println("(left, back to the shell)")
 			case errEOF:
 				fmt.Println()
 			default:
@@ -202,8 +169,8 @@ func runCommand(in *input, args []string) {
 func usage() {
 	fmt.Printf("decenzed-node %s — run your own proxy, share links with friends\n", Version)
 	fmt.Print(`
-Run with no arguments for an interactive shell. In the shell, Ctrl+C leaves the
-current command (back to the prompt); quit with 'exit' or Ctrl+D.
+Run with no arguments for an interactive shell. In the shell, type 'q' to leave
+the current command (back to the prompt); quit with 'exit', 'q', or Ctrl+D.
 Or run one command: decenzed-node <command>
 
 Getting started:

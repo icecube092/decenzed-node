@@ -2,37 +2,33 @@ package commands
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"io"
 	"os"
-	"sync"
+	"strings"
 	"time"
 )
 
 // Control-flow sentinels raised (via panic) from a blocked stdin read so a
 // deeply-nested interactive flow (e.g. setup) can unwind back to the shell:
-//   - errInterrupted: the running command was cancelled with Ctrl+C.
-//   - errEOF:         stdin closed (Ctrl+D) — exit the CLI.
+//   - errQuit: the user typed 'q' at a prompt to leave the current command.
+//   - errEOF:  stdin closed (Ctrl+D) — exit the CLI.
 //
 // They are recovered in the REPL / one-shot runner; nothing else should.
 var (
-	errInterrupted = &ctlErr{"interrupted"}
-	errEOF         = &ctlErr{"eof"}
+	errQuit = &ctlErr{"quit"}
+	errEOF  = &ctlErr{"eof"}
 )
 
 type ctlErr struct{ s string }
 
 func (e *ctlErr) Error() string { return e.s }
 
-// input is the process's single stdin line source. One goroutine reads lines, so
-// a context-cancellable read never leaves a second reader competing for stdin
-// (which would happen if each prompt started its own blocking Read).
+// input is the process's single stdin line source. One goroutine reads lines so
+// nothing else competes for stdin.
 type input struct {
 	lines chan string
 	eof   chan struct{}
-	mu    sync.Mutex
-	ctx   context.Context
 }
 
 // newInput reads from os.Stdin.
@@ -62,38 +58,28 @@ func (in *input) loop(r *bufio.Reader) {
 		}
 		// Other errors — notably on Windows, where Ctrl+C aborts the pending
 		// console read — must NOT be treated as end-of-input (that would quit the
-		// CLI). Discard any partial line and retry; the signal handler deals with
-		// the Ctrl+C itself. A short sleep avoids a busy loop if it ever persists.
+		// CLI). Discard any partial line and retry. A short sleep avoids a busy
+		// loop if it ever persists.
 		time.Sleep(50 * time.Millisecond)
 	}
 }
 
-// setContext installs the context whose cancellation aborts the current read
-// (set per command by the REPL; background at the shell prompt).
-func (in *input) setContext(ctx context.Context) {
-	in.mu.Lock()
-	in.ctx = ctx
-	in.mu.Unlock()
-}
-
-func (in *input) context() context.Context {
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	if in.ctx == nil {
-		return context.Background()
-	}
-	return in.ctx
-}
-
-// readLine returns the next stdin line, or panics errInterrupted (Ctrl+C, i.e.
-// the current context was cancelled) or errEOF (Ctrl+D).
+// readLine returns the next raw stdin line, or panics errEOF on Ctrl+D.
 func (in *input) readLine() string {
 	select {
 	case line := <-in.lines:
 		return line
 	case <-in.eof:
 		panic(errEOF)
-	case <-in.context().Done():
-		panic(errInterrupted)
 	}
+}
+
+// answer reads a reply to an interactive prompt: the trimmed line. Typing 'q'
+// leaves the current command (panics errQuit); Ctrl+D exits the CLI (errEOF).
+func (in *input) answer() string {
+	line := strings.TrimSpace(in.readLine())
+	if strings.EqualFold(line, "q") {
+		panic(errQuit)
+	}
+	return line
 }

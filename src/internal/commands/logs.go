@@ -2,10 +2,8 @@ package commands
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
 	"time"
 )
@@ -14,11 +12,11 @@ import (
 //
 //	logs               all sources, last chunk
 //	logs app | xray    only the app's or xray's lines
-//	logs -f            follow (stream new lines until ctrl+c)
+//	logs -f            follow (stream new lines until you type 'q')
 //
 // Lines are TAB-separated "<time>\t<level>\t<src>\t<message>" (see nodelog); the
 // src field drives the app|xray filter.
-func cmdLogs(args []string) error {
+func cmdLogs(in *input, args []string) error {
 	src, follow, err := parseLogsArgs(args)
 	if err != nil {
 		return err
@@ -47,18 +45,12 @@ func cmdLogs(args []string) error {
 		return nil
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	fmt.Println("-- following log (ctrl+c to stop) --")
+	fmt.Println("-- following log (type 'q' + Enter to stop) --")
+	tick := time.NewTicker(400 * time.Millisecond)
+	defer tick.Stop()
 
 	var leftover []byte
 	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println() // clean line after ^C
-			return nil
-		default:
-		}
 		fi, statErr := f.Stat()
 		if statErr != nil {
 			return statErr
@@ -71,8 +63,14 @@ func cmdLogs(args []string) error {
 			n, _ := f.ReadAt(chunk, offset)
 			offset += int64(n)
 			leftover = printStream(append(leftover, chunk[:n]...), src)
-		} else {
-			time.Sleep(400 * time.Millisecond)
+		}
+		// Wait for the next poll, or stop when the operator types 'q'.
+		select {
+		case line := <-in.lines:
+			if strings.EqualFold(strings.TrimSpace(line), "q") {
+				return nil
+			}
+		case <-tick.C:
 		}
 	}
 }

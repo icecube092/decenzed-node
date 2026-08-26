@@ -171,13 +171,20 @@ func subscriptionURL(c config.AppConfig, cl config.Client) string {
 // subscriptionFunc builds the site's subscription lookup: it maps a client id to
 // the base64 subscription body carrying that client's per-protocol links. Bound
 // to the config the daemon started with (client changes restart the service, so
-// the site is rebuilt with the new set).
-func subscriptionFunc(c config.AppConfig) site.SubFunc {
+// the site is rebuilt with the new set). The location label, however, can change
+// live while the daemon runs (the node moved to a new country): when loc is
+// non-nil each lookup reads the current label from it, so a client re-fetching
+// its subscription sees the up-to-date "<Location> [<Protocol>]" names.
+func subscriptionFunc(c config.AppConfig, loc *locationHolder) site.SubFunc {
 	host := c.TLSHost()
 	return func(id string) (string, bool) {
-		for _, cl := range c.Clients {
+		cfg := c
+		if loc != nil {
+			cfg.Location = loc.get()
+		}
+		for _, cl := range cfg.Clients {
 			if cl.UUID == id {
-				return subscriptionBody(c, cl, host), true
+				return subscriptionBody(cfg, cl, host), true
 			}
 		}
 		return "", false

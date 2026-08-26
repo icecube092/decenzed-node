@@ -8,9 +8,11 @@ import (
 	"decenzed/node_app/internal/bytesize"
 )
 
+// ask prints a prompt and returns the trimmed reply (def on empty). Typing 'q'
+// leaves the current command and returns to the shell.
 func ask(r *input, q, def string) string {
 	fmt.Printf("%s [%s]: ", q, def)
-	line := strings.TrimSpace(r.readLine())
+	line := r.answer()
 	if line == "" {
 		return def
 	}

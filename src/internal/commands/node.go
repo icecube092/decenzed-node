@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"decenzed/node_app/internal/acme"
@@ -49,6 +50,11 @@ func runNode(ctx context.Context) error {
 		return fmt.Errorf("load config: %w — run 'setup' first", err)
 	}
 
+	// The node's location label can change while running (the operator moved to a
+	// new country and the public IP changed). The holder is refreshed on IP change
+	// below and read by the live subscription server, so its links re-tag.
+	loc := &locationHolder{loc: c.Location}
+
 	// TLS camouflage: obtain the certificate (blocking, so the files exist before
 	// xray starts) and serve the decoy website xray falls back to.
 	if c.CamouflageTLS() {
@@ -57,7 +63,7 @@ func runNode(ctx context.Context) error {
 		}
 		go func() {
 			log.Printf("site: serving decoy website + subscriptions on %s (xray fallback target)", c.SiteAddr())
-			if err := site.Serve(ctx, c.SiteAddr(), subscriptionFunc(c), c.ProfileName()); err != nil {
+			if err := site.Serve(ctx, c.SiteAddr(), subscriptionFunc(c, loc), c.ProfileName()); err != nil {
 				log.Println("site server exited:", err)
 			}
 		}()
@@ -135,9 +141,10 @@ func runNode(ctx context.Context) error {
 	var load loadWindow
 	lastActive := map[string]time.Time{}
 
-	// Point DuckDNS at our current IP right away, then keep it fresh on each tick.
+	// Point DuckDNS at our current IP right away and detect our location, then
+	// keep both fresh on each tick.
 	lastPublicIP := c.PublicIP
-	updateDuckDNS(ctx, c, &lastPublicIP)
+	refreshNetworkIdentity(ctx, path, &c, &lastPublicIP, loc)
 
 	// Certificate renewal check cadence (TLS mode). We just provisioned above, so
 	// start the clock now; EnsureCert is a cheap no-op until <30 days to expiry.
@@ -196,7 +203,7 @@ func runNode(ctx context.Context) error {
 			st.UpdatedAt = now
 			_ = nodestats.Save(statsPath, st)
 
-			updateDuckDNS(ctx, c, &lastPublicIP)
+			refreshNetworkIdentity(ctx, path, &c, &lastPublicIP, loc)
 			maybeRenewCert(ctx, c, &lastCertCheck, now)
 			if logErr == nil {
 				nl.Rotate(maxLogBytes) // periodic truncation, off the write path
@@ -266,22 +273,77 @@ func pointDuckDNS(ctx context.Context, c config.AppConfig) (string, error) {
 	return ip, nil
 }
 
-// updateDuckDNS points the node's DuckDNS domain at its current IP, but ONLY
-// when the IP changed since the last successful update (avoids needless calls).
-func updateDuckDNS(ctx context.Context, c config.AppConfig, lastIP *string) {
-	if c.DuckDNSHost() == "" {
-		return
-	}
+// locationHolder guards the node's current location label. The daemon loop
+// refreshes it (on IP change) while the subscription HTTP handler reads it — the
+// two run on separate goroutines — so access must be synchronised.
+type locationHolder struct {
+	mu  sync.Mutex
+	loc string
+}
+
+func (h *locationHolder) get() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.loc
+}
+
+func (h *locationHolder) set(s string) {
+	h.mu.Lock()
+	h.loc = s
+	h.mu.Unlock()
+}
+
+// refreshNetworkIdentity checks the node's current public IP once. When it
+// changed since the last update it points DuckDNS at the new address; and when
+// the IP changed (or we never resolved a location) it re-detects the country and
+// updates the location label, persisting it and publishing it to loc so both the
+// `link` CLI and the live subscription server re-tag proxies — e.g. moving from
+// Serbia to the UK flips the names "RS [VLESS]" -> "UK [VLESS]".
+func refreshNetworkIdentity(ctx context.Context, path string, c *config.AppConfig, lastIP *string, loc *locationHolder) {
 	ip := fetchPublicIP()
-	if ip == "" || ip == *lastIP {
+	if ip == "" {
 		return
 	}
-	if err := duckdns.Update(ctx, c.DuckDNSDomain(), c.DuckDNSToken, ip); err != nil {
-		log.Println("duckdns:", err)
+	ipChanged := ip != *lastIP
+	if ipChanged {
+		if c.DuckDNSHost() != "" {
+			if err := duckdns.Update(ctx, c.DuckDNSDomain(), c.DuckDNSToken, ip); err != nil {
+				// Keep *lastIP so the DNS update retries next tick; still refresh the
+				// location below since the IP genuinely moved.
+				log.Println("duckdns:", err)
+			} else {
+				*lastIP = ip
+				log.Printf("duckdns: %s -> %s", c.DuckDNSHost(), ip)
+			}
+		} else {
+			*lastIP = ip
+		}
+	}
+	if ipChanged || c.Location == "" {
+		refreshLocation(path, c, loc)
+	}
+}
+
+// refreshLocation re-detects the node's country code and, if it differs from the
+// current label, updates the in-memory config, persists it, and publishes it to
+// loc. Best-effort: a failed detection or save leaves the existing label in place.
+func refreshLocation(path string, c *config.AppConfig, loc *locationHolder) {
+	newLoc := detectLocation()
+	if newLoc == "" || newLoc == c.Location {
 		return
 	}
-	*lastIP = ip
-	log.Printf("duckdns: %s -> %s", c.DuckDNSHost(), ip)
+	old := c.Location
+	c.Location = newLoc
+	loc.set(newLoc)
+	if err := config.Save(path, *c); err != nil {
+		log.Println("location: save config:", err)
+		return
+	}
+	if old == "" {
+		log.Printf("location: detected %s — proxies tagged %q", newLoc, newLoc+" [<proto>]")
+	} else {
+		log.Printf("location: %s -> %s — proxies re-tagged %q", old, newLoc, newLoc+" [<proto>]")
+	}
 }
 
 // --- xray input ---

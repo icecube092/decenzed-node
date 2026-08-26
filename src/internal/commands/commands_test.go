@@ -340,7 +340,7 @@ func TestSubscriptionURLAndBody(t *testing.T) {
 
 	// The subscription lookup resolves a known id and base64-decodes to the
 	// per-protocol links; an unknown id is rejected.
-	fn := subscriptionFunc(c)
+	fn := subscriptionFunc(c, nil)
 	body, ok := fn("uuid-1")
 	if !ok {
 		t.Fatal("known id not found")

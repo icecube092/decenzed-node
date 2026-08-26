@@ -113,6 +113,39 @@ jobs:
           echo "----- manifest.json -----"
           cat dist/manifest.json
 
+      - name: Scan binaries on VirusTotal
+        id: vt
+        uses: crazy-max/ghaction-virustotal@v4
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: |
+            dist/decenzed-node-*
+
+      - name: Build release notes
+        env:
+          # Comma-separated "<filepath>=<report_url>" pairs from the scan step.
+          VT_ANALYSIS: ${{ steps.vt.outputs.analysis }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VT_ANALYSIS:-}" ]; then
+            echo "VirusTotal produced no analysis output" >&2
+            exit 1
+          fi
+          {
+            echo "Automated release of decenzed-node ${TAG}"
+            echo
+            echo "## VirusTotal scans"
+            echo
+            IFS=',' read -ra items <<< "$VT_ANALYSIS"
+            for it in "${items[@]}"; do
+              file="${it%%=*}"
+              url="${it#*=}"
+              printf '- [%s](%s)\n' "$(basename "$file")" "$url"
+            done
+          } > dist/release-notes.md
+          echo "----- release-notes.md -----"
+          cat dist/release-notes.md
+
       - name: Publish release in ${{ env.DIST_REPO }}
         env:
           GH_TOKEN: ${{ secrets.DECENZED_NODE_GIT_TOKEN }}
@@ -121,5 +154,5 @@ jobs:
           gh release create "$TAG" \
             --repo "$DIST_REPO" \
             --title "$TAG" \
-            --notes "Automated release of decenzed-node $TAG" \
+            --notes-file dist/release-notes.md \
             dist/decenzed-node-* dist/manifest.json install-openwrt.sh
