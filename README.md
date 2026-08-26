@@ -81,8 +81,12 @@ decenzed-node link    # the connection link to paste into your client
 ```
 
 Notes for routers:
-- Release binaries are **UPX-compressed** (~**10–12 MB** on disk; ~30 MB
-  uncompressed, decompressed into RAM at startup). Devices with only 8–16 MB of
+- The flash-tight router binaries (32-bit ARM and 32-bit MIPS) are
+  **UPX-compressed** (~**10–12 MB** on disk; ~30 MB uncompressed, decompressed
+  into RAM at startup). Everything else ships uncompressed — desktop/server
+  (amd64, 386, Windows, macOS) and arm64 routers (which have ample flash) to avoid
+  antivirus false positives, and the 64-bit MIPS arches because UPX can't pack
+  them. Devices with only 8–16 MB of
   flash may still need USB storage +
   [extroot](https://openwrt.org/docs/guide-user/additional-software/extroot_configuration):
   re-run the installer with `DIR=/mnt/usb`, and/or set

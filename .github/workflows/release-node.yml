@@ -74,15 +74,22 @@ jobs:
               go build -trimpath \
               -ldflags "-s -w -X main.version=${TAG} -X decenzed/node_app/internal/selfupdate.VariantKey=${key}" \
               -o "../dist/${out}" ./cmd/decenzed-node || exit 1
-            # Compress to shrink flash footprint (matters for OpenWRT). Skip macOS
-            # (UPX breaks Gatekeeper/codesign); best-effort elsewhere — an
-            # unsupported arch keeps the uncompressed binary. Done BEFORE the
-            # manifest step so its SHA-256 covers the compressed file.
-            if [ "$goos" != "darwin" ]; then
-              upx -q --best --lzma "../dist/${out}" >/dev/null 2>&1 \
-                && echo "    upx: compressed" \
-                || echo "    upx: skipped (unsupported arch?) — kept uncompressed"
-            fi
+            # Compress only the genuinely flash-tight router builds: 32-bit ARM
+            # (armv5/6/7) and 32-bit MIPS, the arches found on 8-16 MB-flash
+            # devices. Everything else ships uncompressed — desktop/server (amd64,
+            # 386, windows, macOS) and arm64 routers, which have ample flash
+            # (NAND/eMMC/SD), so we avoid the antivirus / VirusTotal false
+            # positives UPX packing causes; and the 64-bit MIPS arches, which UPX
+            # can't pack anyway. Done BEFORE the manifest step so its SHA-256
+            # covers the (possibly) compressed file.
+            case "${goos}/${goarch}" in
+              linux/arm|linux/mips|linux/mipsle)
+                upx -q --best --lzma "../dist/${out}" >/dev/null 2>&1 \
+                  && echo "    upx: compressed (flash-constrained router arch)" \
+                  || echo "    upx: skipped (unsupported arch?) — kept uncompressed" ;;
+              *)
+                echo "    upx: skipped (desktop/arm64/64-bit MIPS — kept uncompressed)" ;;
+            esac
           done || exit 1
           echo "----- built -----"
           ls -la ../dist
