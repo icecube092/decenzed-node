@@ -140,7 +140,7 @@ jobs:
             for it in "${items[@]}"; do
               file="${it%%=*}"
               url="${it#*=}"
-              printf '- [%s](%s)\n' "$(basename "$file")" "$url"
+              printf '%s\n' "- [$(basename "$file")]($url)"
             done
           } > dist/release-notes.md
           echo "----- release-notes.md -----"
