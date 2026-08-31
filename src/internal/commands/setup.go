@@ -56,41 +56,9 @@ func cmdSetup(r *input) error {
 		}
 	}
 
-	// DuckDNS dynamic DNS (optional but recommended). With a token + a subdomain
-	// you created on duckdns.org, the node keeps <subdomain>.duckdns.org pointed at
-	// its current IP, and share links use that domain (surviving IP changes)
-	// instead of the raw IP.
-	c.DuckDNSToken = askClearable(r, "DuckDNS token (Enter keeps current; 'no' = raw IP in links)", c.DuckDNSToken)
-	if c.DuckDNSToken != "" {
-		if c.NodeID == "" {
-			c.NodeID = newNodeID()
-		}
-		fmt.Println("\n>>> DuckDNS does NOT auto-create subdomains. Sign in at https://www.duckdns.org,")
-		fmt.Println(">>> add a subdomain, then enter its label below (without \".duckdns.org\").")
-		def := c.DuckDNSSubdomain
-		if def == "" {
-			def = c.DuckDNSDomain() // legacy decenzed-node-<id> fallback
-		}
-		c.DuckDNSSubdomain = normalizeDuckDNSLabel(askClearable(r, "DuckDNS subdomain you created (without .duckdns.org)", def))
-	}
-	if h := c.DuckDNSHost(); h != "" {
-		fmt.Printf("\n>>> The node will keep %s pointed at your IP (checked every 30s).\n", h)
-		// Point the domain at our current IP right away so links work immediately.
-		// The subdomain must already exist in your DuckDNS account, or this fails.
-		if ip, dErr := pointDuckDNS(context.Background(), c); dErr != nil {
-			fmt.Printf("  ! could not update %s yet: %v\n", h, dErr)
-			fmt.Printf("    (create the subdomain on duckdns.org and check the token, then re-run setup or 'check')\n\n")
-		} else {
-			fmt.Printf("  ok — %s now points at %s\n\n", h, ip)
-		}
-	} else {
-		// Public IP for links (only used when DuckDNS is off).
-		def := c.PublicIP
-		if def == "" {
-			def = detectedIP
-		}
-		c.PublicIP = askClearable(r, "Public IP (for share links; 'no' = auto-detect each time)", def)
-	}
+	// Domain for share links (survives IP changes): either the operator's own
+	// domain, or a DuckDNS one the node keeps pointed at the current IP.
+	configureDomain(r, &c, detectedIP)
 
 	c.Autostart = true // the service always enables boot-start
 
@@ -147,6 +115,95 @@ func askClearable(r *input, q, current string) string {
 		return ""
 	}
 	return v
+}
+
+// configureDomain sets up the hostname that goes in share links (surviving IP
+// changes). It first asks whether the operator wants the node to manage dynamic
+// DNS via DuckDNS:
+//   - No:  the operator already has a domain (bought, or kept pointed at this IP
+//     by their own dynamic-DNS client). They enter it directly (CustomDomain);
+//     the node never updates it. If they have no domain either, links fall back
+//     to the raw public IP.
+//   - Yes: the DuckDNS flow (token + a subdomain created on duckdns.org); the
+//     node keeps <subdomain>.duckdns.org pointed at the current IP.
+//
+// The two are mutually exclusive: choosing one clears the other's state.
+func configureDomain(r *input, c *config.AppConfig, detectedIP string) {
+	fmt.Println("\nDomain for your share links (so links keep working when your IP changes).")
+	fmt.Println("  Answer 'no' if you already have your own domain (bought, or kept updated")
+	fmt.Println("  by another dynamic-DNS program) — you'll just type it in.")
+
+	if !askYesNo(r, "Set up DuckDNS dynamic DNS for you?", c.DuckDNSToken != "") {
+		// Bring-your-own domain (or raw IP): clear any DuckDNS state.
+		c.DuckDNSToken = ""
+		c.DuckDNSSubdomain = ""
+		c.CustomDomain = normalizeDomain(askClearable(r,
+			"Your domain (e.g. vpn.example.com; 'no' = use the raw IP in links)", c.CustomDomain))
+		if c.CustomDomain != "" {
+			fmt.Printf("\n>>> Make sure %s has an A record pointing at this node's IP", c.CustomDomain)
+			if detectedIP != "" {
+				fmt.Printf(" (%s)", detectedIP)
+			}
+			fmt.Println(".")
+			fmt.Println(">>> Your own DNS or dynamic-DNS client must keep it updated — the node won't.")
+			return
+		}
+		// No domain at all — fall back to a raw public IP in links.
+		askPublicIP(r, c, detectedIP)
+		return
+	}
+
+	// DuckDNS branch: the node manages the domain, so drop any custom one.
+	c.CustomDomain = ""
+	c.DuckDNSToken = askClearable(r, "DuckDNS token (from duckdns.org, after signing in)", c.DuckDNSToken)
+	if c.DuckDNSToken != "" {
+		if c.NodeID == "" {
+			c.NodeID = newNodeID()
+		}
+		fmt.Println("\n>>> DuckDNS does NOT auto-create subdomains. Sign in at https://www.duckdns.org,")
+		fmt.Println(">>> add a subdomain, then enter its label below (without \".duckdns.org\").")
+		def := c.DuckDNSSubdomain
+		if def == "" {
+			def = c.DuckDNSDomain() // legacy decenzed-node-<id> fallback
+		}
+		c.DuckDNSSubdomain = normalizeDuckDNSLabel(askClearable(r, "DuckDNS subdomain you created (without .duckdns.org)", def))
+	}
+	if h := c.DuckDNSHost(); h != "" {
+		fmt.Printf("\n>>> The node will keep %s pointed at your IP (checked every 30s).\n", h)
+		// Point the domain at our current IP right away so links work immediately.
+		// The subdomain must already exist in your DuckDNS account, or this fails.
+		if ip, dErr := pointDuckDNS(context.Background(), *c); dErr != nil {
+			fmt.Printf("  ! could not update %s yet: %v\n", h, dErr)
+			fmt.Printf("    (create the subdomain on duckdns.org and check the token, then re-run setup or 'check')\n\n")
+		} else {
+			fmt.Printf("  ok — %s now points at %s\n\n", h, ip)
+		}
+		return
+	}
+	// DuckDNS declined at the token prompt — fall back to a raw public IP.
+	askPublicIP(r, c, detectedIP)
+}
+
+// askPublicIP collects the public IP used in share links when no domain is
+// configured ('no' = auto-detect on each link).
+func askPublicIP(r *input, c *config.AppConfig, detectedIP string) {
+	def := c.PublicIP
+	if def == "" {
+		def = detectedIP
+	}
+	c.PublicIP = askClearable(r, "Public IP (for share links; 'no' = auto-detect each time)", def)
+}
+
+// normalizeDomain trims a user-entered domain to a bare hostname: lower-cased,
+// no scheme, no trailing slash or path.
+func normalizeDomain(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	if i := strings.IndexAny(s, "/?"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // networkPrecheck runs the up-front readiness check at the top of setup, in

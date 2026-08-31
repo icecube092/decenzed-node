@@ -211,12 +211,23 @@ Then it asks the policy questions — press **Enter** to keep the value shown in
 `[brackets]`, or type **`no`** to clear/disable it:
 - **Blocked protocols** (default `bittorrent`; `no` = block none).
 - **Per-user speed cap** (default 50 Mbit/s; `no` = unlimited).
-- **DuckDNS token** (optional; keeps a stable domain pointed at your IP). With a
-  token it also asks for the **subdomain** you created on
-  [duckdns.org](https://www.duckdns.org) — DuckDNS does **not** auto-create it, so
-  sign in, add a subdomain, and enter its label without `.duckdns.org`.
+- **Domain for share links** (so links keep working when your IP changes). Setup
+  first asks whether it should **set up DuckDNS** for you:
+  - **No** — you **bring your own domain** (one you bought, or one already kept
+    pointed at this node's IP by another program). Just type it in; the node uses
+    it in links but never updates it — your own DNS is responsible for that. If
+    you have a dynamic IP and don't want the built-in DuckDNS updater, you can
+    point your own domain at the node and run
+    [ddclient](https://github.com/ddclient/ddclient) yourself to keep its A record
+    updated. Answer `no` here too if you have no domain — links then use the raw
+    public IP.
+  - **Yes** — the **DuckDNS** flow: it asks for your **token**, then the
+    **subdomain** you created on [duckdns.org](https://www.duckdns.org) — DuckDNS
+    does **not** auto-create it, so sign in, add a subdomain, and enter its label
+    without `.duckdns.org`. The node then keeps `<subdomain>.duckdns.org` pointed
+    at your current IP.
 - **Public IP** for share links (`no` = auto-detect each time; only asked when
-  DuckDNS is off).
+  you configure no domain at all).
 
 Then it asks for the **camouflage mode** (`reality` or `tls`):
 - **`reality`** — scans for a REALITY camouflage domain (a live TLS 1.3 + HTTP/2

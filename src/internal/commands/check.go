@@ -127,9 +127,10 @@ func verifyDuckDNSResolves(host, wantIP string) {
 }
 
 // selfCheckHost is the address to dial back for the reachability test: the
-// DuckDNS domain when configured, else the configured/detected public IP.
+// operator's domain (custom or DuckDNS) when configured, else the
+// configured/detected public IP.
 func selfCheckHost(c config.AppConfig, detectedIP string) string {
-	if h := c.DuckDNSHost(); h != "" {
+	if h := c.Domain(); h != "" {
 		return h
 	}
 	if c.PublicIP != "" {

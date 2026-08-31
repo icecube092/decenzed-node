@@ -205,10 +205,11 @@ func subscriptionBody(c config.AppConfig, cl config.Client, host string) string 
 	return base64.StdEncoding.EncodeToString([]byte(plain))
 }
 
-// linkHost is the address that goes in share links: the DuckDNS domain when
-// configured (survives IP changes), otherwise the configured/detected public IP.
+// linkHost is the address that goes in share links: the operator's domain
+// (custom or DuckDNS) when configured (survives IP changes), otherwise the
+// configured/detected public IP.
 func linkHost(c config.AppConfig) string {
-	if h := c.DuckDNSHost(); h != "" {
+	if h := c.Domain(); h != "" {
 		return h
 	}
 	if c.PublicIP != "" {

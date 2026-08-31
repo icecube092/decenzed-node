@@ -47,6 +47,13 @@ type AppConfig struct {
 	DuckDNSToken     string `json:"duckdns_token"`            // empty = links use the raw IP
 	DuckDNSSubdomain string `json:"duckdns_domain,omitempty"` // the subdomain you registered on duckdns.org
 
+	// CustomDomain is a domain the operator already owns (bought, or kept pointed
+	// at this node's IP by their own dynamic-DNS client). When set, it is used in
+	// share links and self-checks instead of DuckDNS/the raw IP, and the node does
+	// NOT update it — the operator's own DNS is responsible for that. Mutually
+	// exclusive with DuckDNS (setup clears one when the other is chosen).
+	CustomDomain string `json:"custom_domain,omitempty"`
+
 	// Networking.
 	Port     int    `json:"port"`      // VLESS+REALITY inbound TCP port (forward this on your router)
 	PublicIP string `json:"public_ip"` // used in share links when DuckDNS is off; auto-detected if empty
@@ -268,6 +275,16 @@ func (c AppConfig) DuckDNSHost() string {
 		return ""
 	}
 	return c.DuckDNSDomain() + ".duckdns.org"
+}
+
+// Domain is the operator-facing hostname (no scheme) that survives IP changes:
+// the operator's own CustomDomain if set, otherwise the DuckDNS host. Empty when
+// neither is configured (links fall back to the raw IP).
+func (c AppConfig) Domain() string {
+	if c.CustomDomain != "" {
+		return c.CustomDomain
+	}
+	return c.DuckDNSHost()
 }
 
 // UUIDs returns the client UUIDs (fed to the xray inbound).
