@@ -112,6 +112,15 @@ it *listens* on your chosen port (e.g. 8443) on the router, and clients connect
   upstream box to this router's LAN IP (Port Forwarding / Virtual Server), exactly
   as `decenzed-node check` prints.
 
+**External port ≠ internal port (443 → 8443).** If you want clients to connect on
+a tidy public port (e.g. **443**) but the node listens on a different local one
+(e.g. **8443**, since 443 is often taken by LuCI), forward **WAN 443 → LAN 8443**
+on your router and tell setup about it: after the bind-port prompt, setup asks for
+the **external port clients dial** (default *same*) — enter `443`. The node keeps
+**binding 8443**, while share links, subscriptions, and self-checks all use
+**443**. Each protocol has its own bind/external pair; `stats` and `check` show the
+mapping as `443(->8443)` when the two differ.
+
 Either way you need a real **public IP**. Behind **CGNAT** (your ISP shares one
 IP across many customers) inbound connections can't reach you — ask your ISP for
 a public/"white" IP, or front the node with a cheap VPS. `decenzed-node check`
@@ -305,6 +314,13 @@ decenzed-node update               # check for a newer version; ask before insta
 **and re-launches the CLI** so the session runs the new version immediately (the
 running process keeps the old code in memory until it restarts — replacing the
 binary file alone doesn't change an already-running program, on any OS).
+
+**After an update, re-run `decenzed-node setup`.** A new version may add config
+fields or change defaults (e.g. new protocol options or the split bind/public
+port). Re-running setup re-asks every field with your current value as the
+default — press Enter to keep each one — and **regenerates `xray.json`** from the
+updated schema, so nothing is lost and the node picks up any new behaviour. Then
+`decenzed-node check` re-verifies the running node is still reachable.
 `stats` shows the **enabled protocols**, whether **debug mode** is on, and lifetime
 traffic broken down **per protocol** (across all clients) and **per client**
 (across all protocols, with the per-user speed cap noted there — the overall load

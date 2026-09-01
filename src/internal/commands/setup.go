@@ -31,13 +31,25 @@ func cmdSetup(r *input) error {
 		c.NodeID = newNodeID()
 	}
 
+	// Persist progress after every answered field so an interrupted setup (Ctrl+C,
+	// or an error partway through) keeps what was entered and offers it as the
+	// default on the next run — instead of forcing a full re-entry. Writes are
+	// atomic (config.Save renames a temp file), so a partial config is safe. The
+	// closure reads the current `c` on each call.
+	save := func() {
+		if serr := config.Save(path, c); serr != nil {
+			fmt.Println("  ! could not save progress:", serr)
+		}
+	}
+	save() // checkpoint the (possibly fresh) NodeID right away
+
 	fmt.Println("decenzed-node setup — Enter keeps the [current] value; type 'no' to clear it.")
 
 	// Network readiness first: public IP -> port -> self-ping -> speed test.
-	detectedIP := networkPrecheck(r, &c)
+	detectedIP := networkPrecheck(r, &c, save)
 
 	// Optional extra protocols, each on its own forwarded port.
-	configureExtraProtocols(r, &c)
+	configureExtraProtocols(r, &c, save)
 
 	if v := ask(r, "Blocked protocols (comma-separated, or 'no' to block none)", strings.Join(orDefault(c.BlockProtocols, []string{"bittorrent"}), ",")); v != "" {
 		if isNo(v) {
@@ -45,6 +57,7 @@ func cmdSetup(r *input) error {
 		} else {
 			c.BlockProtocols = splitCSV(v)
 		}
+		save()
 	}
 	if v := ask(r, "Per-user speed cap (e.g. 50mbit, 'no' = unlimited)", formatBandwidth(nonZeroF(c.MaxUserBps, 50e6/8))); v != "" {
 		if isNo(v) {
@@ -54,17 +67,19 @@ func cmdSetup(r *input) error {
 		} else {
 			fmt.Println("  ! keeping previous value:", perr)
 		}
+		save()
 	}
 
 	// Domain for share links (survives IP changes): either the operator's own
 	// domain, or a DuckDNS one the node keeps pointed at the current IP.
-	configureDomain(r, &c, detectedIP)
+	configureDomain(r, &c, detectedIP, save)
 
 	c.Autostart = true // the service always enables boot-start
+	save()
 
 	// Choose how VLESS/Trojan hide: REALITY (borrow a foreign site) or TLS
 	// (masquerade behind the node's own website with a Let's Encrypt cert).
-	if err := configureCamouflage(r, &c); err != nil {
+	if err := configureCamouflage(r, &c, save); err != nil {
 		return err
 	}
 	// Ensure at least one client (yourself).
@@ -74,6 +89,7 @@ func cmdSetup(r *input) error {
 			return uErr
 		}
 		c.Clients = []config.Client{{UUID: uuid, Name: "me"}}
+		save()
 	}
 
 	if err := config.Save(path, c); err != nil {
@@ -128,7 +144,7 @@ func askClearable(r *input, q, current string) string {
 //     node keeps <subdomain>.duckdns.org pointed at the current IP.
 //
 // The two are mutually exclusive: choosing one clears the other's state.
-func configureDomain(r *input, c *config.AppConfig, detectedIP string) {
+func configureDomain(r *input, c *config.AppConfig, detectedIP string, save func()) {
 	fmt.Println("\nDomain for your share links (so links keep working when your IP changes).")
 	fmt.Println("  Answer 'no' if you already have your own domain (bought, or kept updated")
 	fmt.Println("  by another dynamic-DNS program) — you'll just type it in.")
@@ -139,6 +155,7 @@ func configureDomain(r *input, c *config.AppConfig, detectedIP string) {
 		c.DuckDNSSubdomain = ""
 		c.CustomDomain = normalizeDomain(askClearable(r,
 			"Your domain (e.g. vpn.example.com; 'no' = use the raw IP in links)", c.CustomDomain))
+		save()
 		if c.CustomDomain != "" {
 			fmt.Printf("\n>>> Make sure %s has an A record pointing at this node's IP", c.CustomDomain)
 			if detectedIP != "" {
@@ -150,12 +167,14 @@ func configureDomain(r *input, c *config.AppConfig, detectedIP string) {
 		}
 		// No domain at all — fall back to a raw public IP in links.
 		askPublicIP(r, c, detectedIP)
+		save()
 		return
 	}
 
 	// DuckDNS branch: the node manages the domain, so drop any custom one.
 	c.CustomDomain = ""
 	c.DuckDNSToken = askClearable(r, "DuckDNS token (from duckdns.org, after signing in)", c.DuckDNSToken)
+	save()
 	if c.DuckDNSToken != "" {
 		if c.NodeID == "" {
 			c.NodeID = newNodeID()
@@ -167,6 +186,7 @@ func configureDomain(r *input, c *config.AppConfig, detectedIP string) {
 			def = c.DuckDNSDomain() // legacy decenzed-node-<id> fallback
 		}
 		c.DuckDNSSubdomain = normalizeDuckDNSLabel(askClearable(r, "DuckDNS subdomain you created (without .duckdns.org)", def))
+		save()
 	}
 	if h := c.DuckDNSHost(); h != "" {
 		fmt.Printf("\n>>> The node will keep %s pointed at your IP (checked every 30s).\n", h)
@@ -182,6 +202,7 @@ func configureDomain(r *input, c *config.AppConfig, detectedIP string) {
 	}
 	// DuckDNS declined at the token prompt — fall back to a raw public IP.
 	askPublicIP(r, c, detectedIP)
+	save()
 }
 
 // askPublicIP collects the public IP used in share links when no domain is
@@ -210,7 +231,8 @@ func normalizeDomain(s string) string {
 // order: detect the public IP, choose (and warn about forwarding) the port,
 // self-ping that port via the public IP, then measure speed. Returns the
 // detected public IP so callers can reuse it as a default. It mutates c.Port.
-func networkPrecheck(r *input, c *config.AppConfig) string {
+// save is called after each answered field so an interrupt keeps progress.
+func networkPrecheck(r *input, c *config.AppConfig, save func()) string {
 	// 1. Public IP.
 	ip := fetchPublicIP()
 	if ip == "" {
@@ -228,25 +250,33 @@ func networkPrecheck(r *input, c *config.AppConfig) string {
 	if loc := detectLocation(); loc != "" {
 		c.Location = loc
 		fmt.Printf("location:          %s (auto-detected)\n", loc)
+		save()
 	}
 
 	// 2. Warn about forwarding, then pick the VLESS port — asked the same way as
 	// the other protocols (default 8443).
 	fmt.Println("\nFriends connect INBOUND to this machine, so you must forward one TCP")
-	fmt.Println("port on your router to it. Pick the VLESS port now:")
+	fmt.Println("port on your router to it. Pick the VLESS port the node binds locally:")
 	c.Port = askProtocolPort(r, "VLESS port", c.Port, vlessDefaultPort)
-	printPortForwardHelp(ip, localIPv4s(), c.Port)
+	save()
+	// If the router forwards a different external port to it (e.g. 443 -> 8443),
+	// clients must dial that external port; capture it here (default: same).
+	c.PublicPort = askPublicPort(r, "VLESS", c.PublicPort, c.Port)
+	save()
+	pub := c.VLESSPublicPort()
+	printPortForwardHelp(ip, localIPv4s(), portForward{Public: pub, Bind: c.Port})
 
-	// 3. Self-ping that port from the public IP (temp listener stands in for the
-	//    not-yet-running node).
+	// 3. Self-ping the EXTERNAL port from the public IP: the router forwards it to
+	//    the port the node binds, where a temp listener stands in for the
+	//    not-yet-running node.
 	if ip != "" {
-		fmt.Printf("\nself-check:        dialing %s:%d ...\n", ip, c.Port)
-		if err := selfPortCheck(ip, c.Port, 6*time.Second); err != nil {
-			fmt.Printf("  ! could not reach %s:%d from here: %v\n", ip, c.Port, err)
+		fmt.Printf("\nself-check:        dialing %s:%d ...\n", ip, pub)
+		if err := selfPortCheck(ip, pub, c.Port, 6*time.Second); err != nil {
+			fmt.Printf("  ! could not reach %s:%d from here: %v\n", ip, pub, err)
 			fmt.Println("    (this is normal from inside your own LAN — many routers can't")
 			fmt.Println("     loop back to your public IP; test from mobile data to be sure.)")
 		} else {
-			fmt.Printf("  ok — %s:%d accepted a TCP connection.\n", ip, c.Port)
+			fmt.Printf("  ok — %s:%d accepted a TCP connection.\n", ip, pub)
 		}
 	}
 
@@ -270,26 +300,31 @@ const (
 // Shadowsocks (classic), and/or Shadowsocks-2022 (a y/n question each), and if so
 // on which dedicated TCP port (one port = one protocol). VLESS on c.Port is
 // always on. Generates the Shadowsocks-2022 server key on first enable.
-func configureExtraProtocols(r *input, c *config.AppConfig) {
+func configureExtraProtocols(r *input, c *config.AppConfig, save func()) {
 	fmt.Println("\nExtra protocols (optional). One TCP port hosts ONE protocol, so each")
 	fmt.Println("protocol you enable needs its OWN dedicated TCP port, SEPARATE from the")
 	fmt.Println("VLESS port above — and you must forward/open that port too.")
 
-	// Trojan shares VLESS's camouflage (REALITY or TLS), chosen later.
+	// Trojan shares VLESS's camouflage (REALITY or TLS), chosen later. The public
+	// (external) port is asked only when the protocol is enabled.
 	if askYesNo(r, "\nEnable Trojan?", c.TrojanPort != 0) {
 		rec := recommendPortInRange(trojanPortLo, trojanPortHi, c.Port)
 		c.TrojanPort = askProtocolPort(r, "  Trojan port", c.TrojanPort, rec, c.Port)
+		c.TrojanPublicPort = askPublicPort(r, "  Trojan", c.TrojanPublicPort, c.TrojanPort)
 	} else {
-		c.TrojanPort = 0
+		c.TrojanPort, c.TrojanPublicPort = 0, 0
 	}
+	save()
 
 	// Shadowsocks (classic chacha20-ietf-poly1305) — broad client support.
 	if askYesNo(r, "Enable Shadowsocks? (chacha20-ietf-poly1305, broad support)", c.SSPort != 0) {
 		rec := recommendPortInRange(ssPortLo, ssPortHi, c.Port, c.TrojanPort)
 		c.SSPort = askProtocolPort(r, "  Shadowsocks port", c.SSPort, rec, c.Port, c.TrojanPort)
+		c.SSPublicPort = askPublicPort(r, "  Shadowsocks", c.SSPublicPort, c.SSPort)
 	} else {
-		c.SSPort = 0
+		c.SSPort, c.SSPublicPort = 0, 0
 	}
+	save()
 
 	// Shadowsocks-2022 — stronger, but rejected by many clients; separate inbound.
 	if askYesNo(r, "Also enable Shadowsocks-2022? (stronger; fewer clients accept it)", c.SS2022Port != 0) {
@@ -303,14 +338,25 @@ func configureExtraProtocols(r *input, c *config.AppConfig) {
 				c.SS2022Port = 0
 			}
 		}
+		if c.SS2022Port != 0 {
+			c.SS2022PublicPort = askPublicPort(r, "  Shadowsocks-2022", c.SS2022PublicPort, c.SS2022Port)
+		} else {
+			c.SS2022PublicPort = 0
+		}
 	} else {
-		c.SS2022Port = 0
+		c.SS2022Port, c.SS2022PublicPort = 0, 0
 	}
+	save()
 
 	if extra := c.PublicInbounds(); len(extra) > 1 {
 		fmt.Println("\n>>> Forward/open these extra TCP port(s) — one per protocol:")
 		for _, ib := range extra {
-			if ib.Port != c.Port {
+			if ib.Protocol == config.ProtoVLESS {
+				continue
+			}
+			if ib.Remapped() {
+				fmt.Printf(">>>   WAN %d -> LAN %d  (%s)\n", ib.PublicPort, ib.Port, ib.Protocol)
+			} else {
 				fmt.Printf(">>>   TCP %d  (%s)\n", ib.Port, ib.Protocol)
 			}
 		}
@@ -343,6 +389,29 @@ func askProtocolPort(r *input, label string, current, recommended int, reserved 
 		}
 		return warnIfBusy(n)
 	}
+}
+
+// askPublicPort asks for the EXTERNAL (WAN) TCP port clients dial for a protocol
+// the node binds on `bind`. Most operators forward the same port straight
+// through, so the default is the bind port itself. Only when the router forwards
+// a DIFFERENT external port to `bind` (e.g. WAN 443 -> LAN 8443) do they enter
+// that external port here. Returns the value to store in the matching *PublicPort
+// field: 0 when it equals the bind port (no remap), else the external port.
+func askPublicPort(r *input, label string, current, bind int) int {
+	def := bind
+	if current != 0 {
+		def = current
+	}
+	v := strings.TrimSpace(ask(r, label+" — external port clients dial (keep it the same if your router forwards it straight through)", strconv.Itoa(def)))
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 65535 {
+		fmt.Println("  ! invalid port — treating it as the same as the bind port")
+		return 0
+	}
+	if n == bind {
+		return 0
+	}
+	return n
 }
 
 // collidesPort reports whether n equals any non-zero reserved port.
@@ -380,7 +449,7 @@ func normalizeDuckDNSLabel(s string) string {
 //
 // TLS mode needs a DuckDNS domain (for both the certificate and the DNS-01
 // challenge); without one it falls back to REALITY.
-func configureCamouflage(r *input, c *config.AppConfig) error {
+func configureCamouflage(r *input, c *config.AppConfig, save func()) error {
 	fmt.Println("\nCamouflage for VLESS/Trojan:")
 	fmt.Println("  reality — borrow a stranger's TLS site (no domain/cert needed)")
 	fmt.Println("  tls     — masquerade behind YOUR OWN website on your domain. The node")
@@ -399,15 +468,18 @@ func configureCamouflage(r *input, c *config.AppConfig) error {
 			fmt.Println("    certificate and DNS-01 challenge — none configured. Using REALITY.")
 		} else {
 			c.Camouflage = config.CamouflageTLSMode
-			return configureTLS(r, c)
+			save()
+			return configureTLS(r, c, save)
 		}
 	}
 
 	// REALITY (default / fallback).
 	c.Camouflage = config.CamouflageReality
+	save()
 	if err := chooseRealityDomain(r, c); err != nil {
 		return err
 	}
+	save()
 	// Generate REALITY keys + short id locally (private key stays here).
 	if c.RealityPrivateKey == "" || c.RealityPublicKey == "" {
 		kp, kErr := realitykeys.Generate()
@@ -423,6 +495,7 @@ func configureCamouflage(r *input, c *config.AppConfig) error {
 		}
 		c.RealityShortIDs = []string{sid}
 	}
+	save()
 	return nil
 }
 
@@ -435,7 +508,7 @@ const leAgreementURL = "https://letsencrypt.org/repository/"
 // so setup fails loudly if DNS-01 isn't working (rather than at first start). The
 // certificate is for the node's own DuckDNS domain; no domain scan is done. The
 // CA environment (staging vs production) is fixed at build time, not asked here.
-func configureTLS(r *input, c *config.AppConfig) error {
+func configureTLS(r *input, c *config.AppConfig, save func()) error {
 	fmt.Printf("\n>>> Masquerading behind your own site at https://%s\n", c.TLSHost())
 	fmt.Println(">>> (the node hosts this site itself — nothing to set up separately)")
 
@@ -453,12 +526,14 @@ func configureTLS(r *input, c *config.AppConfig) error {
 	// expiry / urgent notices) and acceptance of the Subscriber Agreement.
 	fmt.Println("\nLet's Encrypt account registration:")
 	c.ACMEEmail = askClearable(r, "  Contact email (recommended, for expiry & security notices)", c.ACMEEmail)
+	save()
 
 	fmt.Printf("  Subscriber Agreement: %s\n", leAgreementURL)
 	if isNo(ask(r, "  Do you accept the Let's Encrypt Subscriber Agreement? (yes/no)", "yes")) {
 		return fmt.Errorf("TLS camouflage needs the Let's Encrypt agreement accepted — aborting")
 	}
 	c.ACMEAgreeTOS = true
+	save()
 
 	fmt.Printf("\nobtaining a %s certificate for %s (DNS-01 via DuckDNS)...\n", leEnv(), c.TLSHost())
 	if err := provisionTLS(context.Background(), *c); err != nil {

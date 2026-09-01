@@ -60,7 +60,12 @@ func enabledProtocolsLine(c config.AppConfig) string {
 	}
 	parts := make([]string, 0, len(ibs))
 	for _, ib := range ibs {
-		parts = append(parts, fmt.Sprintf("%s:%d", protoLabel(ib), ib.Port))
+		// Show the public (dialed) port; note the bind port when a forward remaps it.
+		if ib.Remapped() {
+			parts = append(parts, fmt.Sprintf("%s:%d(->%d)", protoLabel(ib), ib.PublicPort, ib.Port))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:%d", protoLabel(ib), ib.PublicPort))
+		}
 	}
 	return joinComma(parts)
 }

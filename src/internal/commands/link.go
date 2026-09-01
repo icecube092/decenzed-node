@@ -165,7 +165,7 @@ func protoLabel(ib config.Inbound) string {
 // Paste it into a client (v2rayN/NG, nekobox, Hiddify, sing-box, …) as a
 // subscription; the app fetches every protocol link from it.
 func subscriptionURL(c config.AppConfig, cl config.Client) string {
-	return fmt.Sprintf("https://%s:%d%s%s", c.TLSHost(), c.Port, site.SubPath, cl.UUID)
+	return fmt.Sprintf("https://%s:%d%s%s", c.TLSHost(), c.VLESSPublicPort(), site.SubPath, cl.UUID)
 }
 
 // subscriptionFunc builds the site's subscription lookup: it maps a client id to
@@ -226,11 +226,11 @@ func clientLink(c config.AppConfig, cl config.Client, host string, ib config.Inb
 	tag := linkTag(c, ib)
 	switch ib.Protocol {
 	case config.ProtoVLESS:
-		return vlessLink(c, cl, host, ib.Port, tag)
+		return vlessLink(c, cl, host, ib.DialPort(), tag)
 	case config.ProtoTrojan:
-		return trojanLink(c, cl, host, ib.Port, tag)
+		return trojanLink(c, cl, host, ib.DialPort(), tag)
 	case config.ProtoShadowsocks:
-		return ssLink(c, cl, host, ib.Port, ib.Method, tag)
+		return ssLink(c, cl, host, ib.DialPort(), ib.Method, tag)
 	}
 	return ""
 }
@@ -369,12 +369,12 @@ func clientSingbox(c config.AppConfig, cl config.Client, host string, ib config.
 	switch ib.Protocol {
 	case config.ProtoVLESS:
 		ob = sbVLESS{
-			Type: "vless", Tag: tag, Server: host, ServerPort: ib.Port,
+			Type: "vless", Tag: tag, Server: host, ServerPort: ib.DialPort(),
 			UUID: cl.UUID, Flow: "xtls-rprx-vision", Network: "tcp", TLS: camouflageTLS(c),
 		}
 	case config.ProtoTrojan:
 		ob = sbTrojan{
-			Type: "trojan", Tag: tag, Server: host, ServerPort: ib.Port,
+			Type: "trojan", Tag: tag, Server: host, ServerPort: ib.DialPort(),
 			Password: cl.UUID, Network: "tcp", TLS: camouflageTLS(c),
 		}
 	case config.ProtoShadowsocks:
@@ -383,7 +383,7 @@ func clientSingbox(c config.AppConfig, cl config.Client, host string, ib config.
 			password = c.SSServerKey + ":" + config.SSUserPSK(cl.UUID)
 		}
 		ob = sbShadowsocks{
-			Type: "shadowsocks", Tag: tag, Server: host, ServerPort: ib.Port,
+			Type: "shadowsocks", Tag: tag, Server: host, ServerPort: ib.DialPort(),
 			Method: ib.Method, Password: password,
 		}
 	default:

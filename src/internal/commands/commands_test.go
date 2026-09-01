@@ -29,20 +29,22 @@ func TestAskProtocolPortKeepsSavedPort(t *testing.T) {
 }
 
 func TestCheckInbounds(t *testing.T) {
-	// Without a config: only the default VLESS port is reported.
+	// Without a config: only the default VLESS port is reported (public == bind).
 	got := checkInbounds(config.AppConfig{}, false)
-	if len(got) != 1 || got[0].name != config.ProtoVLESS || got[0].port != 443 {
+	if len(got) != 1 || got[0].name != config.ProtoVLESS || got[0].public != 443 || got[0].bind != 443 {
 		t.Fatalf("no-config case = %+v", got)
 	}
 
-	// With a config: all protocols in order; disabled ones keep port 0.
-	cfg := config.AppConfig{Port: 8443, TrojanPort: 0, SSPort: 35123, SS2022Port: 0}
+	// With a config: all protocols in order; disabled ones keep port 0. VLESS is
+	// remapped (router forwards WAN 443 -> LAN 8443), so its public port is 443
+	// while it still binds 8443.
+	cfg := config.AppConfig{Port: 8443, PublicPort: 443, TrojanPort: 0, SSPort: 35123, SS2022Port: 0}
 	got = checkInbounds(cfg, true)
 	want := []checkInbound{
-		{config.ProtoVLESS, 8443},
-		{config.ProtoTrojan, 0},
-		{config.ProtoShadowsocks, 35123},
-		{"shadowsocks-2022", 0},
+		{config.ProtoVLESS, 443, 8443},
+		{config.ProtoTrojan, 0, 0},
+		{config.ProtoShadowsocks, 35123, 35123},
+		{"shadowsocks-2022", 0, 0},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d", len(got), len(want))
@@ -52,14 +54,19 @@ func TestCheckInbounds(t *testing.T) {
 			t.Errorf("[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
+	if !got[0].remapped() || got[2].remapped() {
+		t.Errorf("remapped(): VLESS=%v SS=%v, want true/false", got[0].remapped(), got[2].remapped())
+	}
 }
 
-func TestJoinPorts(t *testing.T) {
-	if got := joinPorts([]int{8443, 8444, 9443}); got != "8443, 8444, 9443" {
-		t.Errorf("joinPorts = %q", got)
+func TestJoinForwards(t *testing.T) {
+	// Straight forwards render as bare ports; a remap shows both sides.
+	got := joinForwards([]portForward{{8443, 8443}, {8444, 8444}, {443, 8443}})
+	if got != "8443, 8444, 443->8443" {
+		t.Errorf("joinForwards = %q", got)
 	}
-	if got := joinPorts([]int{443}); got != "443" {
-		t.Errorf("joinPorts single = %q", got)
+	if got := joinForwards([]portForward{{443, 443}}); got != "443" {
+		t.Errorf("joinForwards single = %q", got)
 	}
 }
 

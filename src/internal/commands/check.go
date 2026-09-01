@@ -54,21 +54,27 @@ func cmdCheck(r *input) error {
 	// (port-forwarding). Disabled protocols are reported as such.
 	host := selfCheckHost(cfg, ip)
 	fmt.Println("\nprotocol ports:")
-	var unreachable []int
+	var unreachable []portForward
 	for _, pr := range checkInbounds(cfg, haveCfg) {
 		label := pr.name + ":"
-		if pr.port == 0 {
+		if pr.public == 0 {
 			fmt.Printf("  %-12s disabled\n", label)
 			continue
 		}
+		// Clients reach us on the PUBLIC (external) port; a router forward maps it
+		// to the port the node actually binds. Note the mapping when they differ.
+		portDesc := strconv.Itoa(pr.public)
+		if pr.remapped() {
+			portDesc = fmt.Sprintf("%d (-> :%d)", pr.public, pr.bind)
+		}
 		if host == "" {
-			fmt.Printf("  %-12s TCP %d — can't self-check (no public IP/domain)\n", label, pr.port)
+			fmt.Printf("  %-12s TCP %s — can't self-check (no public IP/domain)\n", label, portDesc)
 			continue
 		}
-		fmt.Printf("  %-12s dialing %s:%d ... ", label, host, pr.port)
-		if err := selfReach(host, pr.port, 6*time.Second); err != nil {
+		fmt.Printf("  %-12s dialing %s:%d ... ", label, host, pr.public)
+		if err := selfReach(host, pr.public, 6*time.Second); err != nil {
 			fmt.Printf("unreachable (%v)\n", err)
-			unreachable = append(unreachable, pr.port)
+			unreachable = append(unreachable, portForward{Public: pr.public, Bind: pr.bind})
 		} else {
 			fmt.Println("ok — accepted a TCP connection")
 		}
@@ -84,25 +90,41 @@ func cmdCheck(r *input) error {
 	return nil
 }
 
-// checkInbound pairs a protocol name with its configured port (0 = disabled).
+// checkInbound pairs a protocol name with its external (public) and internal
+// (bind) ports. A public port of 0 means the protocol is disabled.
 type checkInbound struct {
-	name string
-	port int
+	name   string
+	public int
+	bind   int
 }
+
+// remapped reports whether the external port differs from the port the node
+// binds (a router forward sits in front).
+func (ci checkInbound) remapped() bool { return ci.bind != 0 && ci.bind != ci.public }
 
 // checkInbounds lists the protocols to report in `check`, in a stable order
 // (VLESS, Trojan, Shadowsocks). Without a saved config we can only assume the
 // default VLESS port, so just that one is reported.
 func checkInbounds(cfg config.AppConfig, haveCfg bool) []checkInbound {
 	if !haveCfg {
-		return []checkInbound{{config.ProtoVLESS, 443}}
+		return []checkInbound{{config.ProtoVLESS, 443, 443}}
 	}
 	return []checkInbound{
-		{config.ProtoVLESS, cfg.Port},
-		{config.ProtoTrojan, cfg.TrojanPort},
-		{config.ProtoShadowsocks, cfg.SSPort},
-		{"shadowsocks-2022", cfg.SS2022Port},
+		{config.ProtoVLESS, cfg.VLESSPublicPort(), cfg.Port},
+		{config.ProtoTrojan, publicOrBind(cfg.TrojanPublicPort, cfg.TrojanPort), cfg.TrojanPort},
+		{config.ProtoShadowsocks, publicOrBind(cfg.SSPublicPort, cfg.SSPort), cfg.SSPort},
+		{"shadowsocks-2022", publicOrBind(cfg.SS2022PublicPort, cfg.SS2022Port), cfg.SS2022Port},
 	}
+}
+
+// publicOrBind mirrors config's public-port fallback for the disabled-aware
+// listing here: the external override when set, else the bind port (which is 0,
+// i.e. "disabled", when the protocol is off).
+func publicOrBind(pub, bind int) int {
+	if pub != 0 {
+		return pub
+	}
+	return bind
 }
 
 // verifyDuckDNSResolves resolves host and reports whether it currently points at
@@ -149,13 +171,15 @@ func selfReach(host string, port int, timeout time.Duration) error {
 	return conn.Close()
 }
 
-// selfPortCheck confirms host:port is reachable from here. During setup the node
-// isn't listening yet, so it spins up a throwaway TCP listener on the port for the
-// duration of the dial; if the port is already bound (e.g. the running node), it
-// dials the existing listener instead. A failure from inside your own LAN is not
+// selfPortCheck confirms host:publicPort is reachable from here. During setup the
+// node isn't listening yet, so it spins up a throwaway TCP listener on bindPort —
+// the port the node WILL bind, and the router's forward target — for the duration
+// of the dial; if that port is already bound (e.g. the running node), it dials the
+// existing listener instead. The dial targets publicPort (the external port the
+// router forwards to bindPort). A failure from inside your own LAN is not
 // conclusive — many home routers can't hairpin back to their public IP.
-func selfPortCheck(host string, port int, timeout time.Duration) error {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+func selfPortCheck(host string, publicPort, bindPort int, timeout time.Duration) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", bindPort))
 	if err == nil {
 		defer ln.Close()
 		go func() {
@@ -168,7 +192,7 @@ func selfPortCheck(host string, port int, timeout time.Duration) error {
 			}
 		}()
 	}
-	return selfReach(host, port, timeout)
+	return selfReach(host, publicPort, timeout)
 }
 
 // runSpeedTest measures up/down throughput and prints the result, warning when
@@ -189,21 +213,39 @@ func runSpeedTest() {
 	}
 }
 
+// portForward is one router mapping: the external (WAN) port clients dial and
+// the internal (LAN) port the node binds. They are equal unless the operator
+// deliberately remaps (e.g. WAN 443 -> LAN 8443).
+type portForward struct {
+	Public int // external / WAN port
+	Bind   int // internal / LAN port
+}
+
+// remapped reports whether the external and internal ports differ.
+func (f portForward) remapped() bool { return f.Bind != 0 && f.Bind != f.Public }
+
 // printPortForwardHelp prints router port-forwarding instructions for one or
-// more TCP ports (one per enabled protocol).
-func printPortForwardHelp(publicIP string, local []string, ports ...int) {
+// more TCP mappings (one per enabled protocol). When a mapping remaps the port
+// (external != internal), the instructions spell out both sides.
+func printPortForwardHelp(publicIP string, local []string, fwds ...portForward) {
 	lan := "your machine's LAN IP"
 	if len(local) > 0 {
 		lan = local[0]
 	}
-	ps := joinPorts(ports)
+	ps := joinForwards(fwds)
+	// The per-port rule differs when any mapping remaps: with a straight forward
+	// the external and internal port match; with a remap they don't.
+	rule := "protocol TCP, external port = internal port"
+	if anyRemapped(fwds) {
+		rule = "protocol TCP, external port -> internal port as listed above"
+	}
 	fmt.Printf(`
 ── open port(s) %s on your router ─────────────────────────────
 Friends connect INBOUND to this machine, so forward TCP port(s) %s:
 
   1. Open your router admin page (often http://192.168.1.1).
   2. Find "Port Forwarding" / "Virtual Server" / "NAT".
-  3. For EACH port add: protocol TCP, external port = internal port,
+  3. For EACH mapping add: %s,
      internal IP %s (this machine).
   4. Give this machine a STATIC LAN IP (DHCP reservation).
 
@@ -212,14 +254,29 @@ Tips: allow those TCP port(s) in your firewall; if your ISP uses CGNAT
 won't help — ask for a public IP or use a VPS. Some ISPs block
 443; port 8443 usually works.
 ────────────────────────────────────────────────────────────────
-`, ps, ps, lan)
+`, ps, ps, rule, lan)
 }
 
-// joinPorts renders ports as a comma-separated list, e.g. "8443, 8444, 9443".
-func joinPorts(ports []int) string {
-	ss := make([]string, len(ports))
-	for i, p := range ports {
-		ss[i] = strconv.Itoa(p)
+// anyRemapped reports whether any mapping has external != internal.
+func anyRemapped(fwds []portForward) bool {
+	for _, f := range fwds {
+		if f.remapped() {
+			return true
+		}
+	}
+	return false
+}
+
+// joinForwards renders mappings as a comma-separated list. A straight forward
+// shows just the port ("8443"); a remap shows both sides ("443->8443").
+func joinForwards(fwds []portForward) string {
+	ss := make([]string, len(fwds))
+	for i, f := range fwds {
+		if f.remapped() {
+			ss[i] = fmt.Sprintf("%d->%d", f.Public, f.Bind)
+		} else {
+			ss[i] = strconv.Itoa(f.Public)
+		}
 	}
 	return strings.Join(ss, ", ")
 }

@@ -127,7 +127,7 @@ func runNode(ctx context.Context) error {
 	st, _ := nodestats.Load(statsPath)
 	st.StartedAt = time.Now()
 	st.Running = true
-	st.Port = c.Port
+	st.Port = c.VLESSPublicPort()
 	st.ClientsConfigured = len(c.Clients)
 	st.BandwidthCap = c.MaxUserBps
 	if st.PerClient == nil {

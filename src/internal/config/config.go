@@ -55,8 +55,19 @@ type AppConfig struct {
 	CustomDomain string `json:"custom_domain,omitempty"`
 
 	// Networking.
-	Port     int    `json:"port"`      // VLESS+REALITY inbound TCP port (forward this on your router)
+	Port     int    `json:"port"`      // VLESS+REALITY inbound TCP port the node BINDS on this machine
 	PublicIP string `json:"public_ip"` // used in share links when DuckDNS is off; auto-detected if empty
+
+	// Public (external) ports. Normally clients dial the very port the node binds
+	// (Port / TrojanPort / …). When a router forwards a DIFFERENT external port to
+	// the internal one — e.g. WAN 443 -> LAN 8443 — the node still binds the
+	// internal port, but share links and self-checks must use the external one.
+	// Set the matching *PublicPort to that external port; 0 means "same as the
+	// bind port" (no remap), which is the common case.
+	PublicPort       int `json:"public_port,omitempty"`
+	TrojanPublicPort int `json:"trojan_public_port,omitempty"`
+	SSPublicPort     int `json:"ss_public_port,omitempty"`
+	SS2022PublicPort int `json:"ss2022_public_port,omitempty"`
 
 	// Location is a short label shown in each proxy's name in the client (e.g. the
 	// country code "RS"). It is auto-detected from the public IP at setup; proxy
@@ -207,13 +218,39 @@ func SSUserPSK(uuid string) string {
 // IsSS2022 reports whether a Shadowsocks cipher is an SS-2022 method.
 func IsSS2022(method string) bool { return strings.HasPrefix(method, "2022-") }
 
-// Inbound is one enabled listener: a protocol on a public TCP port. For
-// Shadowsocks, Method carries the cipher (the two SS variants share the protocol
-// id but differ by cipher/port); it is empty for VLESS/Trojan.
+// Inbound is one enabled listener: a protocol on a TCP port. Port is what the
+// node BINDS on this machine; PublicPort is what clients DIAL (equal to Port
+// unless a router forward remaps it). For Shadowsocks, Method carries the cipher
+// (the two SS variants share the protocol id but differ by cipher/port); it is
+// empty for VLESS/Trojan.
 type Inbound struct {
-	Protocol string
-	Port     int
-	Method   string
+	Protocol   string
+	Port       int // port the node binds on this machine (LAN-internal)
+	PublicPort int // port clients dial; == Port unless a router forward remaps it
+	Method     string
+}
+
+// DialPort is the port clients dial for this inbound: the PublicPort override
+// when set, else the bind Port. Use this (not the raw fields) anywhere a share
+// link, subscription, or self-check needs the externally reachable port, so an
+// Inbound is correct however it was constructed.
+func (i Inbound) DialPort() int {
+	if i.PublicPort != 0 {
+		return i.PublicPort
+	}
+	return i.Port
+}
+
+// Remapped reports whether this inbound's public (external) port differs from
+// the port the node binds — i.e. a router forward sits in front of it.
+func (i Inbound) Remapped() bool { return i.PublicPort != 0 && i.PublicPort != i.Port }
+
+// publicOr returns the public-port override when set, else the bind port.
+func publicOr(pub, bind int) int {
+	if pub != 0 {
+		return pub
+	}
+	return bind
 }
 
 // PublicInbounds lists the protocol listeners this node exposes, in a stable
@@ -222,19 +259,23 @@ type Inbound struct {
 func (c AppConfig) PublicInbounds() []Inbound {
 	var out []Inbound
 	if c.Port != 0 {
-		out = append(out, Inbound{Protocol: ProtoVLESS, Port: c.Port})
+		out = append(out, Inbound{Protocol: ProtoVLESS, Port: c.Port, PublicPort: publicOr(c.PublicPort, c.Port)})
 	}
 	if c.TrojanPort != 0 {
-		out = append(out, Inbound{Protocol: ProtoTrojan, Port: c.TrojanPort})
+		out = append(out, Inbound{Protocol: ProtoTrojan, Port: c.TrojanPort, PublicPort: publicOr(c.TrojanPublicPort, c.TrojanPort)})
 	}
 	if c.SSPort != 0 {
-		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SSPort, Method: SSMethodClassic})
+		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SSPort, PublicPort: publicOr(c.SSPublicPort, c.SSPort), Method: SSMethodClassic})
 	}
 	if c.SS2022Port != 0 {
-		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SS2022Port, Method: SSMethod2022})
+		out = append(out, Inbound{Protocol: ProtoShadowsocks, Port: c.SS2022Port, PublicPort: publicOr(c.SS2022PublicPort, c.SS2022Port), Method: SSMethod2022})
 	}
 	return out
 }
+
+// VLESSPublicPort is the external port clients dial for VLESS: the PublicPort
+// override, or the bind Port when unset.
+func (c AppConfig) VLESSPublicPort() int { return publicOr(c.PublicPort, c.Port) }
 
 // Default returns a config populated with sensible defaults.
 func Default() AppConfig {

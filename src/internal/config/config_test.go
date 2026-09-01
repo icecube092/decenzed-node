@@ -25,6 +25,25 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	assert.Equal(t, []string{"u-1", "u-2"}, got.UUIDs())
 }
 
+func TestPublicInboundsPortRemap(t *testing.T) {
+	// Node binds 8443 for VLESS but the router forwards WAN 443 -> LAN 8443;
+	// Trojan is forwarded straight through (no remap).
+	c := AppConfig{Port: 8443, PublicPort: 443, TrojanPort: 8444}
+	ibs := c.PublicInbounds()
+	require.Len(t, ibs, 2)
+
+	vless := ibs[0]
+	assert.Equal(t, 8443, vless.Port, "binds the internal port")
+	assert.Equal(t, 443, vless.DialPort(), "clients dial the external port")
+	assert.True(t, vless.Remapped())
+	assert.Equal(t, 443, c.VLESSPublicPort())
+
+	trojan := ibs[1]
+	assert.Equal(t, 8444, trojan.Port)
+	assert.Equal(t, 8444, trojan.DialPort(), "no override falls back to the bind port")
+	assert.False(t, trojan.Remapped())
+}
+
 func TestBlocksBittorrent(t *testing.T) {
 	c := Default()
 	assert.True(t, c.BlocksBittorrent(), "default blocks bittorrent")
