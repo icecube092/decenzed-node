@@ -157,6 +157,42 @@ func TestXrayVlessTrojanRealityStart(t *testing.T) {
 	require.NoError(t, rt.Stop())
 }
 
+// Boots the real generated config with a per-user domain filter (whitelist for
+// one user, blacklist for another), proving xray-core accepts the user-scoped
+// routing rules we emit — the `user` field, the geosite: domain token, and the
+// user-scoped catch-all block.
+func TestXrayPerUserDomainFilterStart(t *testing.T) {
+	kp, err := realitykeys.Generate()
+	require.NoError(t, err)
+	reality := &xraygen.RealitySpec{
+		Dest: "www.microsoft.com:443", Names: []string{"www.microsoft.com"},
+		PrivKey: kp.Private, ShortIDs: []string{"beef"},
+	}
+	in := xraygen.Input{
+		StatsEnabled:    true,
+		BlockBittorrent: true,
+		BlockIPs:        []string{"10.0.0.0/8", "127.0.0.0/8", "fc00::/7"}, // private-IP egress block, literal CIDRs
+		Inbounds: []xraygen.InboundSpec{{
+			Protocol: "vless", Port: freePort(t), ListenAddr: "127.0.0.1",
+			Clients: []xraygen.ClientCred{{ID: "uuid-1", Email: "uuid-1"}, {ID: "uuid-2", Email: "uuid-2"}},
+			Reality: reality,
+		}},
+		// Plain domain tokens + literal CIDRs only: a geosite:/geoip:COUNTRY token
+		// would make xray fail to load without the .dat asset present (see runNode's
+		// XRAY_LOCATION_ASSET).
+		UserDomains: []xraygen.UserDomainPolicy{
+			{Email: "uuid-1", Mode: "whitelist", Domains: []string{"good.example", "domain:example.com"}},
+			{Email: "uuid-2", Mode: "blacklist", Domains: []string{"keyword:ads", "bad.example"}, IPs: []string{"192.168.0.0/16"}},
+		},
+	}
+	data, err := xraygen.Generate(in).JSON()
+	require.NoError(t, err)
+
+	rt := NewXray()
+	require.NoError(t, rt.Start(context.Background(), data), "per-user domain filter config must start")
+	require.NoError(t, rt.Stop())
+}
+
 // Boots the real generated VLESS+TLS inbound with a website fallback — the main
 // production masquerade path — validating the tls transport + fallback wiring
 // under the curated feature imports.

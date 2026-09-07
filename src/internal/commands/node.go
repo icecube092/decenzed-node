@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +77,10 @@ func runNode(ctx context.Context) error {
 		rt.SetLogSink(nl.WriteXray)
 		rt.SetDebug(c.Debug)
 	}
+	// Point xray at decenzed-data/domains for geosite.dat and any external .dat an
+	// operator dropped there (custom text lists are inlined at generation time and
+	// need no asset). Set before Start so the loader picks it up.
+	setXrayAssetDir()
 	xcfg, err := xraygen.Generate(inputFromConfig(c)).JSON()
 	if err != nil {
 		return fmt.Errorf("generate xray config: %w", err)
@@ -349,8 +354,6 @@ func refreshLocation(path string, c *config.AppConfig, loc *locationHolder) {
 // --- xray input ---
 
 func inputFromConfig(c config.AppConfig) xraygen.Input {
-	eff := domainlist.Policy{OverrideAllow: c.DomainAllow, OverrideDeny: c.DomainDeny}.Resolve()
-
 	// Camouflage params shared by the VLESS/Trojan inbounds — either REALITY or
 	// real TLS with a fallback to the node's own website. Exactly one is set on
 	// each inbound, per the node-wide Camouflage tumbler.
@@ -414,14 +417,92 @@ func inputFromConfig(c config.AppConfig) xraygen.Input {
 		specs = append(specs, spec)
 	}
 
+	policies, resolveIP := userDomainPolicies(c.Clients)
+	var blockIPs []string
+	if c.BlocksPrivateIP() {
+		blockIPs = domainlist.PrivateIPCIDRs
+	}
 	return xraygen.Input{
 		Inbounds:        specs,
 		BlockBittorrent: c.BlocksBittorrent(),
-		DomainAllow:     eff.Allow,
-		DomainDeny:      eff.Deny,
+		BlockIPs:        blockIPs,
+		ResolveDomainIP: resolveIP,
+		UserDomains:     policies,
 		StatsEnabled:    true,
 		Debug:           c.Debug,
 	}
+}
+
+// userDomainPolicies resolves each filtered client's sources into the per-user
+// policies xray routes on: geosite/ext/domain tokens land in Domains, geoip:
+// tokens in IPs, and custom text files (decenzed-data/domains) are inlined.
+// Resolver warnings (a missing list/asset) are logged, not fatal. resolveIP is
+// true when any COUNTRY geoip rule is used, so the caller enables domain->IP
+// resolution (IPIfNonMatch) for it.
+func userDomainPolicies(clients []config.Client) (policies []xraygen.UserDomainPolicy, resolveIP bool) {
+	resolver := domainlist.Resolver{Dir: domainsDir()}
+	for _, cl := range clients {
+		if !cl.FiltersDomains() {
+			continue
+		}
+		res := resolver.Resolve(cl.Domains)
+		for _, w := range res.Warnings {
+			log.Printf("domain filter for %s: %s", clientLabel(cl), w)
+		}
+		if len(res.Domains) == 0 && len(res.IPs) == 0 {
+			continue
+		}
+		policies = append(policies, xraygen.UserDomainPolicy{
+			Email:   cl.UUID,
+			Mode:    string(cl.DomainMode),
+			Domains: res.Domains,
+			IPs:     res.IPs,
+		})
+		if needsIPResolve(res.IPs) {
+			resolveIP = true
+		}
+	}
+	return policies, resolveIP
+}
+
+// needsIPResolve reports whether any IP matcher is a COUNTRY geoip rule (not
+// geoip:private, not a literal CIDR) — those only match domain traffic once xray
+// resolves the domain to an IP (domainStrategy IPIfNonMatch).
+func needsIPResolve(ips []string) bool {
+	for _, ip := range ips {
+		if code, ok := strings.CutPrefix(ip, "geoip:"); ok && !strings.EqualFold(strings.TrimSpace(code), "private") {
+			return true
+		}
+	}
+	return false
+}
+
+// domainsDir is where custom domain lists (NAME.txt) and any .dat asset files
+// live, and the asset directory xray reads geosite.dat / external .dat from. It
+// sits under the data dir; "" if the data dir can't be resolved.
+func domainsDir() string {
+	dir, err := dataDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "domains")
+}
+
+// setXrayAssetDir points the embedded xray-core at the domains dir for geosite/
+// external-.dat lookups and ensures the dir exists, returning it ("" if
+// unresolved). xray reads XRAY_LOCATION_ASSET lazily when it loads the config,
+// so setting it in-process before each start is enough — it needs no OS-level
+// persistence (we re-set it on every launch: daemon start and CLI start).
+func setXrayAssetDir() string {
+	dir := domainsDir()
+	if dir == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("domains dir %s: %v", dir, err)
+	}
+	os.Setenv("XRAY_LOCATION_ASSET", dir)
+	return dir
 }
 
 // certPaths returns the cert/key file paths xray reads in TLS mode. They live in

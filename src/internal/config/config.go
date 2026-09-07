@@ -29,11 +29,43 @@ var defaultUpdateManifestURL string
 // DefaultUpdateManifestURL returns the built-in update manifest URL ("" = off).
 func DefaultUpdateManifestURL() string { return strings.TrimSpace(defaultUpdateManifestURL) }
 
+// DomainMode selects how a client's domain list is interpreted for routing.
+// The empty value means "no domain filtering" (the field is omitted from JSON).
+type DomainMode string
+
+const (
+	DomainModeOff       DomainMode = ""          // no domain filtering for this user
+	DomainModeBlacklist DomainMode = "blacklist" // block the listed domains; allow everything else
+	DomainModeWhitelist DomainMode = "whitelist" // allow ONLY the listed domains; block everything else
+)
+
+// Filtering reports whether m is an active filtering mode (blacklist/whitelist),
+// as opposed to "off"/unset.
+func (m DomainMode) Filtering() bool {
+	return m == DomainModeBlacklist || m == DomainModeWhitelist
+}
+
 // Client is one connection credential you issue (yourself or a friend). Revoke
 // a friend by removing their entry.
 type Client struct {
 	UUID string `json:"uuid"`
 	Name string `json:"name,omitempty"`
+
+	// Per-user domain filter, enforced by xray routing (a rule keyed by this
+	// client's UUID — the email xray matches on). DomainMode selects
+	// blacklist/whitelist; Domains is the list in xray domain syntax ("domain:",
+	// "full:", "keyword:", "regexp:", "geosite:"; bare = "domain:"). An unset
+	// DomainMode (or an empty list) means this user is unfiltered. Edit with
+	// `link edit <name>`.
+	DomainMode DomainMode `json:"domain_mode,omitempty"`
+	Domains    []string   `json:"domains,omitempty"`
+}
+
+// FiltersDomains reports whether the client has an effective (non-empty) domain
+// filter. A mode set with an empty list is treated as no filter, so a mis-set
+// empty whitelist can never silently black-hole a user.
+func (cl Client) FiltersDomains() bool {
+	return cl.DomainMode.Filtering() && len(cl.Domains) > 0
 }
 
 // AppConfig is the high-level operator config. The xray JSON is DERIVED from it
@@ -98,9 +130,22 @@ type AppConfig struct {
 	// Policy.
 	MaxUserBps     float64  `json:"max_user_bps"`    // per-user speed cap (bytes/sec); 0 = off
 	BlockProtocols []string `json:"block_protocols"` // e.g. ["bittorrent"]; empty = block nothing
-	DomainAllow    []string `json:"domain_allow"`    // if set: allow ONLY these
-	DomainDeny     []string `json:"domain_deny"`     // always blocked
 	Autostart      bool     `json:"autostart"`
+
+	// AllowPrivateIP disables the default global block of private/LAN/link-local
+	// destination IPs (xray "geoip:private", built-in — no geoip.dat needed). The
+	// zero value (false) BLOCKS them: an egress-safety measure so proxy users
+	// can't reach the node's own local network. Set true only to deliberately
+	// allow LAN access through the proxy.
+	AllowPrivateIP bool `json:"allow_private_ip,omitempty"`
+
+	// Default per-user domain filter applied to NEWLY created clients only (the
+	// initial "me" client at setup and every `link add`). Changing it never
+	// touches existing clients — per-user edits happen in `link edit`. An unset
+	// mode means new clients start unfiltered. DefaultDomains holds source tokens
+	// (see Client.Domains).
+	DefaultDomainMode DomainMode `json:"default_domain_mode,omitempty"`
+	DefaultDomains    []string   `json:"default_domains,omitempty"`
 
 	// Camouflage selects how the REALITY-capable protocols (VLESS, Trojan) hide.
 	// One tumbler for both — they cannot use different modes. Shadowsocks is never
@@ -328,6 +373,19 @@ func (c AppConfig) Domain() string {
 	return c.DuckDNSHost()
 }
 
+// NewClient builds a client with a fresh policy seeded from the node's new-user
+// defaults (DefaultDomainMode/DefaultDomains). Used by setup and `link add` so
+// new users inherit the operator's default domain filter; existing users are
+// never touched by a later default change.
+func (c AppConfig) NewClient(uuid, name string) Client {
+	cl := Client{UUID: uuid, Name: name}
+	if c.DefaultDomainMode.Filtering() && len(c.DefaultDomains) > 0 {
+		cl.DomainMode = c.DefaultDomainMode
+		cl.Domains = append([]string(nil), c.DefaultDomains...)
+	}
+	return cl
+}
+
 // UUIDs returns the client UUIDs (fed to the xray inbound).
 func (c AppConfig) UUIDs() []string {
 	out := make([]string, 0, len(c.Clients))
@@ -336,6 +394,10 @@ func (c AppConfig) UUIDs() []string {
 	}
 	return out
 }
+
+// BlocksPrivateIP reports whether the node blocks proxy access to private/LAN
+// IP ranges (the default). Used by the xray generator.
+func (c AppConfig) BlocksPrivateIP() bool { return !c.AllowPrivateIP }
 
 // BlocksBittorrent is a convenience used by the xray generator.
 func (c AppConfig) BlocksBittorrent() bool {

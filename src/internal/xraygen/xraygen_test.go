@@ -37,31 +37,120 @@ func TestGenerateBlocksBittorrent(t *testing.T) {
 	assert.True(t, found, "expected a bittorrent->block routing rule")
 }
 
-func TestGenerateAllowlistAddsDefaultBlock(t *testing.T) {
-	in := vlessIn(443)
-	in.DomainAllow = []string{"x.com"}
+func TestGenerateUserBlacklist(t *testing.T) {
+	in := vlessIn(443, "u1")
+	in.UserDomains = []UserDomainPolicy{{Email: "u1", Mode: "blacklist", Domains: []string{"geosite:category-ads-all", "bad.com"}}}
 	cfg := Generate(in)
-	rules := cfg.Routing.Rules
-	require.GreaterOrEqual(t, len(rules), 2, "allow-list mode needs allow + default block")
 
-	last := rules[len(rules)-1]
-	assert.Equal(t, "block", last.OutboundTag)
-	assert.NotEmpty(t, last.Network, "last rule is the default (network) block")
-
-	allowOK := false
-	for _, r := range rules {
-		if len(r.Domain) == 1 && r.Domain[0] == "x.com" && r.OutboundTag == "direct" {
-			allowOK = true
-		}
+	require.Len(t, cfg.Routing.Rules, 1, "blacklist is a single user-scoped block rule")
+	r := cfg.Routing.Rules[0]
+	assert.Equal(t, []string{"u1"}, r.User, "rule is scoped to the user")
+	assert.Equal(t, []string{"geosite:category-ads-all", "bad.com"}, r.Domain)
+	assert.Equal(t, "block", r.OutboundTag)
+	// No catch-all block: a blacklist user's other traffic falls through to direct.
+	for _, rr := range cfg.Routing.Rules {
+		assert.False(t, rr.Network != "" && rr.OutboundTag == "block", "blacklist must not add a catch-all block")
 	}
-	assert.True(t, allowOK, "expected an allow(x.com)->direct rule")
 }
 
-func TestGenerateNoAllowlistNoDefaultBlock(t *testing.T) {
-	cfg := Generate(vlessIn(443))
-	for _, r := range cfg.Routing.Rules {
-		assert.False(t, r.Network != "" && r.OutboundTag == "block", "no default block without an allow-list")
+func TestGenerateUserWhitelist(t *testing.T) {
+	in := vlessIn(443, "u1")
+	in.UserDomains = []UserDomainPolicy{{Email: "u1", Mode: "whitelist", Domains: []string{"good.com"}}}
+	cfg := Generate(in)
+
+	require.Len(t, cfg.Routing.Rules, 2, "whitelist = allow rule + user-scoped catch-all block")
+	allow, block := cfg.Routing.Rules[0], cfg.Routing.Rules[1]
+	assert.Equal(t, []string{"u1"}, allow.User)
+	assert.Equal(t, []string{"good.com"}, allow.Domain)
+	assert.Equal(t, "direct", allow.OutboundTag)
+	// The catch-all block must be scoped to the user so it never affects others.
+	assert.Equal(t, []string{"u1"}, block.User, "catch-all block is user-scoped")
+	assert.NotEmpty(t, block.Network)
+	assert.Equal(t, "block", block.OutboundTag)
+}
+
+func TestGenerateUserFilterEmptyIsNoop(t *testing.T) {
+	// A mode set but no domains (or no email) must emit no rules — a mis-set empty
+	// whitelist can't silently black-hole a user.
+	in := vlessIn(443, "u1")
+	in.UserDomains = []UserDomainPolicy{
+		{Email: "u1", Mode: "whitelist", Domains: nil},
+		{Email: "", Mode: "blacklist", Domains: []string{"x.com"}},
 	}
+	cfg := Generate(in)
+	assert.Empty(t, cfg.Routing.Rules)
+}
+
+func TestGeneratePrivateIPBlock(t *testing.T) {
+	in := vlessIn(443, "u1")
+	in.BlockIPs = []string{"10.0.0.0/8", "127.0.0.0/8"}
+	cfg := Generate(in)
+	require.Len(t, cfg.Routing.Rules, 1)
+	r := cfg.Routing.Rules[0]
+	assert.Equal(t, []string{"10.0.0.0/8", "127.0.0.0/8"}, r.IP)
+	assert.Empty(t, r.User, "the private block is global, not user-scoped")
+	assert.Equal(t, "block", r.OutboundTag)
+	assert.Equal(t, "AsIs", cfg.Routing.DomainStrategy, "literal-CIDR block needs no domain resolution")
+	assert.Nil(t, cfg.DNS)
+}
+
+func TestGenerateUserGeoIPSplitsRules(t *testing.T) {
+	in := vlessIn(443, "u1")
+	in.ResolveDomainIP = true // a country geoip rule is in use
+	in.UserDomains = []UserDomainPolicy{{
+		Email: "u1", Mode: "blacklist",
+		Domains: []string{"bad.com"}, IPs: []string{"geoip:ru"},
+	}}
+	cfg := Generate(in)
+
+	// domain and ip matchers must be SEPARATE rules (OR, not AND).
+	require.Len(t, cfg.Routing.Rules, 2)
+	var domainRule, ipRule *rule
+	for i := range cfg.Routing.Rules {
+		rr := &cfg.Routing.Rules[i]
+		if len(rr.Domain) > 0 {
+			domainRule = rr
+		}
+		if len(rr.IP) > 0 {
+			ipRule = rr
+		}
+	}
+	require.NotNil(t, domainRule)
+	require.NotNil(t, ipRule)
+	assert.Equal(t, []string{"u1"}, domainRule.User)
+	assert.Equal(t, []string{"u1"}, ipRule.User)
+	assert.Empty(t, ipRule.Domain, "one rule can't AND domain+ip")
+
+	// Country geoip needs domain->IP resolution + a dns block.
+	assert.Equal(t, "IPIfNonMatch", cfg.Routing.DomainStrategy)
+	assert.Contains(t, string(cfg.DNS), "localhost")
+}
+
+func TestGenerateWhitelistGeoIPHasUserCatchAll(t *testing.T) {
+	in := vlessIn(443, "u1")
+	in.UserDomains = []UserDomainPolicy{{
+		Email: "u1", Mode: "whitelist", IPs: []string{"geoip:ru"},
+	}}
+	cfg := Generate(in)
+	// allow(ip) + user-scoped catch-all block.
+	require.Len(t, cfg.Routing.Rules, 2)
+	assert.Equal(t, []string{"geoip:ru"}, cfg.Routing.Rules[0].IP)
+	assert.Equal(t, "direct", cfg.Routing.Rules[0].OutboundTag)
+	last := cfg.Routing.Rules[1]
+	assert.Equal(t, []string{"u1"}, last.User)
+	assert.NotEmpty(t, last.Network)
+	assert.Equal(t, "block", last.OutboundTag)
+}
+
+func TestGenerateBittorrentBeforeUserRules(t *testing.T) {
+	in := vlessIn(443, "u1")
+	in.BlockBittorrent = true
+	in.UserDomains = []UserDomainPolicy{{Email: "u1", Mode: "whitelist", Domains: []string{"good.com"}}}
+	cfg := Generate(in)
+	require.Len(t, cfg.Routing.Rules, 3)
+	// Bittorrent block is global and must be first (wins for everyone).
+	assert.Equal(t, []string{"bittorrent"}, cfg.Routing.Rules[0].Protocol)
+	assert.Empty(t, cfg.Routing.Rules[0].User, "bittorrent rule is not user-scoped")
 }
 
 func TestGenerateStatsAndInbound(t *testing.T) {

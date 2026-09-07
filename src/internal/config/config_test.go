@@ -13,16 +13,41 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	c := Default()
 	c.PublicIP = "203.0.113.7"
 	c.MaxUserBps = 1_250_000
-	c.DomainDeny = []string{"bad.com"}
-	c.Clients = []Client{{UUID: "u-1", Name: "me"}, {UUID: "u-2", Name: "friend"}}
+	c.Clients = []Client{
+		{UUID: "u-1", Name: "me"},
+		{UUID: "u-2", Name: "friend", DomainMode: DomainModeBlacklist, Domains: []string{"geosite:category-ads-all", "bad.com"}},
+	}
 
 	require.NoError(t, Save(path, c))
 	got, err := Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, c.PublicIP, got.PublicIP)
 	assert.Equal(t, c.MaxUserBps, got.MaxUserBps)
-	assert.Equal(t, []string{"bad.com"}, got.DomainDeny)
 	assert.Equal(t, []string{"u-1", "u-2"}, got.UUIDs())
+	// Per-user domain filter round-trips.
+	assert.Equal(t, DomainModeBlacklist, got.Clients[1].DomainMode)
+	assert.Equal(t, []string{"geosite:category-ads-all", "bad.com"}, got.Clients[1].Domains)
+	assert.True(t, got.Clients[1].FiltersDomains())
+	assert.False(t, got.Clients[0].FiltersDomains())
+}
+
+func TestNewClientAppliesDefaults(t *testing.T) {
+	c := Default()
+	c.DefaultDomainMode = DomainModeWhitelist
+	c.DefaultDomains = []string{"geosite:google", "file:work"}
+
+	cl := c.NewClient("u-9", "alice")
+	assert.Equal(t, DomainModeWhitelist, cl.DomainMode)
+	assert.Equal(t, []string{"geosite:google", "file:work"}, cl.Domains)
+
+	// The new client's list is a copy — mutating it must not touch the defaults.
+	cl.Domains[0] = "changed"
+	assert.Equal(t, "geosite:google", c.DefaultDomains[0])
+
+	// No default => an unfiltered client.
+	plain := Default().NewClient("u-10", "bob")
+	assert.False(t, plain.FiltersDomains())
+	assert.Equal(t, DomainModeOff, plain.DomainMode)
 }
 
 func TestPublicInboundsPortRemap(t *testing.T) {

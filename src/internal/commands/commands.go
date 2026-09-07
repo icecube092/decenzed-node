@@ -35,6 +35,10 @@ func Main() int {
 	// not already); skip with DECENZED_NO_ELEVATE=1.
 	maybeElevate()
 
+	// Point the (embedded) xray at the domains asset dir for this process, the
+	// same way the daemon does — set in-process each launch, no OS persistence.
+	setXrayAssetDir()
+
 	in := newInput()
 	if len(os.Args) < 2 {
 		return repl(in)
@@ -71,7 +75,7 @@ func dispatch(in *input, args []string) error {
 	case "setup":
 		return cmdSetup(in)
 	case "link":
-		return cmdLink(args[1:])
+		return cmdLink(in, args[1:])
 	case "start":
 		return cmdStart()
 	case "service":
@@ -184,6 +188,8 @@ Commands:
   link [-l|-s]              Show clients: subscription link; -l adds per-protocol
                             links, -s adds sing-box outbounds.
   link add [name]           Create a new client (for a friend) and print its link.
+  link edit <name|uuid>     Configure a client's per-user domain filter (mode +
+                            lists: geosite/.dat categories + custom text lists).
   link remove <name|uuid>   Revoke a client.
   start                     Run in the foreground (instead of the service).
   stats                     Protocols, per-client/per-inbound traffic, run status.

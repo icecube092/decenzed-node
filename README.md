@@ -15,6 +15,8 @@ self-contained and open source.
 - Automatic Let's Encrypt certificates (obtain + renew) for the TLS mode
 - One subscription link per client — apps pull every protocol automatically
 - Per-user speed cap and per-client / per-protocol traffic stats
+- **Per-user domain & IP filtering** (blacklist / whitelist) — geosite/geoip
+  categories, custom lists, and `geoip:private` LAN-egress block on by default
 - DDNS (DuckDNS) for dynamic IPs
 - Wide architecture support — x86, ARM, MIPS (desktops + OpenWRT routers)
 - Single self-contained binary on embedded xray-core, no coordination server
@@ -94,6 +96,11 @@ Notes for routers:
 - On OpenWRT the background service is managed by **procd** (`/etc/init.d/decenzed-node`),
   so `service install|status|start|stop|restart` work natively, and `update`
   self-replaces the binary and restarts the service.
+- **Domain/IP filters:** the `geosite.dat` / `geoip.dat` data files are **several
+  MB each and load into RAM** — heavy for flash-tight routers. They're fetched
+  **only if you use a `geosite:`/`geoip:COUNTRY` source**; prefer custom text lists
+  or `geoip:private`, or move data to USB with `DECENZED_DATA`. See
+  [Per-user domain & IP filters](#9-per-user-domain--ip-filters).
 - Manual control: `/etc/init.d/decenzed-node {start|stop|restart|status}`; logs via `logread -e decenzed`.
 
 **How it works on a router — where the port points.** The node is a TCP server:
@@ -219,6 +226,11 @@ Shadowsocks-2022), each on its own port pre-filled with a free one — see the
 Then it asks the policy questions — press **Enter** to keep the value shown in
 `[brackets]`, or type **`no`** to clear/disable it:
 - **Blocked protocols** (default `bittorrent`; `no` = block none).
+- **Block private/LAN IP ranges** (default **yes**, recommended) — stops proxy
+  users from reaching the node's own local network. See
+  [Per-user domain & IP filters](#9-per-user-domain--ip-filters).
+- **Default domain filter for new users** (default `no`) — a mode
+  (blacklist/whitelist) + sources applied to **newly created** clients only.
 - **Per-user speed cap** (default 50 Mbit/s; `no` = unlimited).
 - **Domain for share links** (so links keep working when your IP changes). Setup
   first asks whether it should **set up DuckDNS** for you:
@@ -284,7 +296,8 @@ Or run in the foreground for a quick test: `decenzed-node start`.
 decenzed-node link                 # subscription link per client
 decenzed-node link -l              # + one line per per-protocol connection link
 decenzed-node link -s              # + a sing-box outbound per protocol
-decenzed-node link add alice       # create a client for a friend, print their link
+decenzed-node link add alice       # create a client (prompts for its domain filter)
+decenzed-node link edit alice      # configure a client's per-user domain/IP filter
 decenzed-node link remove alice    # revoke a friend
 ```
 In **TLS mode** each client gets **one subscription link** —
@@ -336,6 +349,127 @@ lines are dropped, recent history kept).
 **To change any setting, re-run `decenzed-node setup`** — it re-asks every field
 with the current value as the default and rebuilds `xray.json`. You never edit
 xray JSON by hand.
+
+## 9. Per-user domain & IP filters
+
+Each client can have its **own** domain/IP filter, enforced by **xray itself**
+(routing rules keyed by the client). A filter has a **mode** and a list of
+**sources**:
+
+- **blacklist** — block the listed targets, allow everything else.
+- **whitelist** — allow **only** the listed targets, block everything else.
+
+Configure a client interactively — `link add` prompts for it on creation (pre-filled
+with the setup default), and `link edit <name>` opens a small REPL:
+
+```text
+decenzed-node link edit alice
+  user> mode blacklist
+  user> domains geosite:category-ads-all, geoip:ru, file:blocked
+  user> done          # saves + reloads the service (q cancels)
+```
+
+`setup` asks for a **default** mode + sources applied to **new** users only
+(existing clients are never touched). `stats` shows each client's active filter.
+
+### Source formats (they combine — several sources = one filter)
+
+| Source | Matches | Needs a data file? |
+| --- | --- | --- |
+| `domain:example.com` | that domain + subdomains | no |
+| `full:` / `keyword:` / `regexp:` | explicit xray domain matcher | no |
+| `example.com` (bare) | same as `domain:` | no |
+| `geosite:CATEGORY` | a domain list (e.g. `geosite:category-ads-all`) | **geosite.dat** |
+| `geoip:CODE` | destination IP by country (e.g. `geoip:ru`) | **geoip.dat** |
+| `geoip:private` | private/LAN/loopback ranges | no (expanded to CIDRs) |
+| `file:NAME` | your text list at `decenzed-data/domains/NAME.txt` | no |
+| `url:https://…` | a remote text list (e.g. hosted on GitHub), cached locally | no |
+| `ext:FILE.dat:CATEGORY` | a category in your own `.dat` | that `.dat` |
+
+There's **no `!` negation** in xray — "allow everything **except** X" is just
+**blacklist** mode with X; "**only** X" is **whitelist** mode.
+
+### Custom lists (`file:` and `url:`)
+
+A **custom list** is a plain text file, **one source per line** — any source from
+the table above (bare domains, `domain:`, `geoip:`, …). Blank lines and `#`
+comments are ignored (a trailing `# …` on a line is stripped too):
+
+```text
+# my blocklist
+domain:ru            # all .ru domains + subdomains
+mail.ru
+vk.com
+geoip:ru             # + Russian IPs (needs geoip.dat)
+geoip:private        # + LAN ranges
+```
+
+**Local file** — save it as `decenzed-data/domains/<NAME>.txt` (create the
+`domains/` folder next to the binary if it doesn't exist) and reference it by its
+name **without the path or `.txt`**:
+
+```text
+decenzed-node link edit alice
+  user> mode blacklist
+  user> domains file:blocklist       # -> decenzed-data/domains/blocklist.txt
+  user> done
+```
+
+**Remote list (GitHub, etc.)** — host the same text file anywhere reachable over
+HTTPS (a GitHub repo works well) and reference it by its **raw** URL:
+
+```text
+  user> domains url:https://raw.githubusercontent.com/<you>/<repo>/main/blocklist.txt
+```
+
+On GitHub, open the file and click **Raw** to get the
+`https://raw.githubusercontent.com/…` URL. The node **downloads and caches** the
+list into `decenzed-data/domains/` when you add it, and **`decenzed-node update`
+re-fetches** every `url:` list in your config (if a refresh fails, the last cached
+copy is kept). You maintain only the file in your repo — no local editing, and it
+works offline from the cache. Lists **combine**, so you can mix
+`file:blocklist, url:https://…, geosite:category-ads-all, geoip:ru` in one filter.
+
+### geosite vs geoip
+
+- **geosite** = domain lists (matched against the sniffed domain/SNI). Best for
+  *categories of services* (ads, trackers, social, …).
+  [Loyalsoldier](https://github.com/Loyalsoldier/v2ray-rules-dat)'s geosite is
+  **China-centric** — it has `geosite:cn`, `geolocation-!cn`, `category-ads-all`,
+  `gfw`, … but **no per-country domain lists** (no `geosite:ru`). The full
+  category list lives in [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community/tree/master/data).
+- **geoip** = IP ranges by country (`geoip:ru`, `geoip:cn`, `geoip:us`, … all
+  two-letter codes) plus `geoip:private`, `geoip:cloudflare`, `geoip:telegram`, ….
+  Best for *"by country of the destination server"* and catching **direct
+  connections to an IP** (no domain to sniff). Using a **country** geoip source
+  switches xray to `domainStrategy: IPIfNonMatch` (a DNS lookup per otherwise
+  unmatched connection) so it also applies to domain traffic.
+
+`geoip:private` is **blocked globally by default** (the setup question above) as an
+egress-safety measure, and needs no download.
+
+### ⚠️ geosite.dat / geoip.dat are heavy — mind flash-tight routers
+
+`geosite.dat` and `geoip.dat` are **several megabytes each** (and grow over time),
+downloaded into `decenzed-data/domains/` and **loaded into RAM by xray** at start.
+On **budget OpenWRT routers with only 8–16 MB of flash / limited RAM** this can be
+too much. Recommendations for routers:
+
+- The node **only downloads them if you actually use a `geosite:`/`geoip:COUNTRY`
+  source** — if you don't, nothing is fetched.
+- Prefer **custom text lists** (`file:NAME`, a few KB) or **`geoip:private`** (no
+  file at all) over the big `.dat` files where possible.
+- If you need the `.dat` files, put data on **USB/extroot** and set
+  `DECENZED_DATA=/mnt/usb/decenzed-data` so they live off the router's flash.
+- Country **geoip** matching also enables per-connection DNS resolution
+  (`IPIfNonMatch`) — extra CPU on weak SoCs.
+
+The files are downloaded on demand when you add such a source (with a y/n prompt),
+and `decenzed-node update` refreshes them (geosite/geoip **before** the binary),
+only for the files you actually use. They come from the
+[Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat)
+release (verified by its SHA-256 sidecar); override the source with the
+`DECENZED_GEOSITE_URL` / `DECENZED_GEOIP_URL` env vars.
 
 ## Notes
 - **Per-user speed cap** is enforced by a small throttle proxy in front of xray

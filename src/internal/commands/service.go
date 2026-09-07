@@ -122,9 +122,14 @@ func statusString(s service.Status) string {
 // downloads + verifies it, replaces the running binary, restarts the background
 // service, and re-launches the CLI so this session runs the new version too.
 func cmdUpdate(in *input) error {
+	// Update the geosite/geoip data first (only the files actually in use), then
+	// the binary itself.
+	updateGeodata(in)
+
 	url := config.DefaultUpdateManifestURL()
 	if url == "" {
-		return fmt.Errorf("updates are not configured for this build")
+		fmt.Println("binary self-update is not configured for this build.")
+		return nil
 	}
 	fmt.Println("checking for updates...")
 	available, ver, asset, err := selfupdate.Check(context.Background(), Version, url)

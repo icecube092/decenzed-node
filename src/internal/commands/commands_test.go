@@ -83,6 +83,114 @@ func TestIsNo(t *testing.T) {
 	}
 }
 
+func TestParseDomainMode(t *testing.T) {
+	black := []string{"blacklist", "BL", "block", "deny", "Black"}
+	white := []string{"whitelist", "wl", "allow", "WHITE"}
+	off := []string{"", "no", "off", "none", "wat"}
+	for _, s := range black {
+		if got := parseDomainMode(s); got != config.DomainModeBlacklist {
+			t.Errorf("parseDomainMode(%q) = %q, want blacklist", s, got)
+		}
+	}
+	for _, s := range white {
+		if got := parseDomainMode(s); got != config.DomainModeWhitelist {
+			t.Errorf("parseDomainMode(%q) = %q, want whitelist", s, got)
+		}
+	}
+	for _, s := range off {
+		if got := parseDomainMode(s); got != config.DomainModeOff {
+			t.Errorf("parseDomainMode(%q) = %q, want off", s, got)
+		}
+	}
+}
+
+func TestDomainPolicyAndFilterNote(t *testing.T) {
+	// No mode: off, and no stats note.
+	plain := config.Client{UUID: "u1"}
+	if domainPolicyDesc(plain) != "off (no domain filtering)" {
+		t.Errorf("desc(plain) = %q", domainPolicyDesc(plain))
+	}
+	if domainFilterNote(plain) != "" {
+		t.Errorf("note(plain) = %q, want empty", domainFilterNote(plain))
+	}
+
+	// Mode set but no sources: inactive, still no stats note (FiltersDomains false).
+	empty := config.Client{UUID: "u1", DomainMode: config.DomainModeWhitelist}
+	if got := domainPolicyDesc(empty); got != "whitelist (no sources — inactive)" {
+		t.Errorf("desc(empty) = %q", got)
+	}
+	if domainFilterNote(empty) != "" {
+		t.Errorf("note(empty) = %q, want empty", domainFilterNote(empty))
+	}
+
+	// Active filter: both render the mode + sources.
+	active := config.Client{UUID: "u1", DomainMode: config.DomainModeBlacklist,
+		Domains: []string{"geosite:ads", "bad.com"}}
+	if got := domainPolicyDesc(active); got != "blacklist — geosite:ads, bad.com" {
+		t.Errorf("desc(active) = %q", got)
+	}
+	if got := domainFilterNote(active); got != "filter: blacklist — geosite:ads, bad.com (2)" {
+		t.Errorf("note(active) = %q", got)
+	}
+
+	// Long lists are truncated in the stats note.
+	many := config.Client{UUID: "u1", DomainMode: config.DomainModeBlacklist,
+		Domains: []string{"a", "b", "c", "d", "e", "f", "g", "h"}}
+	if got := domainFilterNote(many); !strings.Contains(got, "+2 more") || !strings.Contains(got, "(8)") {
+		t.Errorf("note(many) = %q, want truncation with +2 more and (8)", got)
+	}
+}
+
+func TestGeositeReferenceHelpers(t *testing.T) {
+	if hasGeositeToken([]string{"domain:example.com", "file:blocked", "bad.com"}) {
+		t.Error("no geosite token, want false")
+	}
+	if !hasGeositeToken([]string{"domain:x", " geosite:category-ads-all "}) {
+		t.Error("has a geosite token, want true")
+	}
+
+	c := config.AppConfig{
+		DefaultDomains: []string{"domain:x"},
+		Clients: []config.Client{
+			{UUID: "u1", Domains: []string{"file:a"}},
+			{UUID: "u2", Domains: []string{"geosite:google"}},
+		},
+	}
+	if !configUsesGeosite(c) {
+		t.Error("a client uses geosite, want true")
+	}
+	c.Clients[1].Domains = []string{"domain:y"}
+	if configUsesGeosite(c) {
+		t.Error("nobody uses geosite now, want false")
+	}
+	c.DefaultDomains = []string{"geosite:category-ads-all"}
+	if !configUsesGeosite(c) {
+		t.Error("default uses geosite, want true")
+	}
+}
+
+func TestHostOf(t *testing.T) {
+	if got := hostOf("https://github.com/x/y/releases/latest/download/geosite.dat"); got != "github.com" {
+		t.Errorf("hostOf = %q, want github.com", got)
+	}
+	if got := hostOf("not a url"); got != "not a url" {
+		t.Errorf("hostOf(bad) = %q", got)
+	}
+}
+
+func TestFindClientIdx(t *testing.T) {
+	clients := []config.Client{{UUID: "uuid-a", Name: "alice"}, {UUID: "uuid-b"}}
+	if i := findClientIdx(clients, "alice"); i != 0 {
+		t.Errorf("by name = %d, want 0", i)
+	}
+	if i := findClientIdx(clients, "uuid-b"); i != 1 {
+		t.Errorf("by uuid = %d, want 1", i)
+	}
+	if i := findClientIdx(clients, "nope"); i != -1 {
+		t.Errorf("missing = %d, want -1", i)
+	}
+}
+
 func TestSplitCSV(t *testing.T) {
 	got := splitCSV(" bittorrent , , quic ")
 	want := []string{"bittorrent", "quic"}

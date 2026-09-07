@@ -87,31 +87,29 @@ func printPerInbound(c config.AppConfig, st nodestats.Snapshot) {
 }
 
 // printPerClient shows lifetime traffic per client (across all protocols they
-// used), most traffic first. Names come from the config; unnamed clients show a
-// short UUID prefix.
+// used), most traffic first, plus each client's per-user domain filter. Every
+// configured client is listed (so a filtered-but-idle user still shows its
+// filter); a client that used traffic but was since removed appears as an
+// unnamed orphan row.
 func printPerClient(c config.AppConfig, st nodestats.Snapshot) {
-	if len(st.PerClient) == 0 {
-		return
-	}
-	name := map[string]string{}
-	for _, cl := range c.Clients {
-		n := cl.Name
-		if n == "" {
-			n = cl.UUID[:8]
-		}
-		name[cl.UUID] = n
-	}
+	configured := map[string]bool{}
 	type row struct {
-		label string
-		d     nodestats.DirBytes
+		label  string
+		filter string
+		d      nodestats.DirBytes
 	}
-	rows := make([]row, 0, len(st.PerClient))
+	var rows []row
+	for _, cl := range c.Clients {
+		configured[cl.UUID] = true
+		rows = append(rows, row{clientDisplayName(cl), domainFilterNote(cl), st.PerClient[cl.UUID]})
+	}
 	for uuid, d := range st.PerClient {
-		label, ok := name[uuid]
-		if !ok {
-			label = uuid[:8] // a client removed since it last used traffic
+		if !configured[uuid] {
+			rows = append(rows, row{shortUUID(uuid) + " (removed)", "", d}) // orphan traffic
 		}
-		rows = append(rows, row{label, d})
+	}
+	if len(rows) == 0 {
+		return
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].d.Total() > rows[j].d.Total() })
 
@@ -125,7 +123,35 @@ func printPerClient(c config.AppConfig, st nodestats.Snapshot) {
 	for _, r := range rows {
 		fmt.Printf("  %-14s %s  (up %s / down %s)\n",
 			r.label+":", humanBytes(r.d.Total()), humanBytes(r.d.Up), humanBytes(r.d.Down))
+		if r.filter != "" {
+			fmt.Printf("      %s\n", r.filter)
+		}
 	}
+}
+
+// clientDisplayName is the client's name, or a short UUID prefix when unnamed.
+func clientDisplayName(cl config.Client) string {
+	if cl.Name != "" {
+		return cl.Name
+	}
+	return shortUUID(cl.UUID)
+}
+
+// domainFilterNote renders a client's active domain filter for the stats view
+// ("" when the client has none). Long lists are truncated to keep the line
+// readable; the full list lives in `link edit`.
+func domainFilterNote(cl config.Client) string {
+	if !cl.FiltersDomains() {
+		return ""
+	}
+	const max = 6
+	list := cl.Domains
+	suffix := ""
+	if len(list) > max {
+		suffix = fmt.Sprintf(", +%d more", len(list)-max)
+		list = list[:max]
+	}
+	return fmt.Sprintf("filter: %s — %s%s (%d)", cl.DomainMode, joinComma(list), suffix, len(cl.Domains))
 }
 
 // joinComma joins parts with ", ".

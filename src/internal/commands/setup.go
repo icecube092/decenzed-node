@@ -59,6 +59,10 @@ func cmdSetup(r *input) error {
 		}
 		save()
 	}
+	// Egress safety: block proxy access to private/LAN ranges (xray geoip:private,
+	// built-in — no download). Recommended on; answer 'no' to allow LAN access.
+	c.AllowPrivateIP = !askYesNo(r, "Block access to private/LAN IP ranges? (recommended)", c.BlocksPrivateIP())
+	save()
 	if v := ask(r, "Per-user speed cap (e.g. 50mbit, 'no' = unlimited)", formatBandwidth(nonZeroF(c.MaxUserBps, 50e6/8))); v != "" {
 		if isNo(v) {
 			c.MaxUserBps = 0 // clear the cap
@@ -69,6 +73,9 @@ func cmdSetup(r *input) error {
 		}
 		save()
 	}
+
+	// Default per-user domain filter applied to NEW users (existing ones untouched).
+	configureDefaultDomainPolicy(r, &c, save)
 
 	// Domain for share links (survives IP changes): either the operator's own
 	// domain, or a DuckDNS one the node keeps pointed at the current IP.
@@ -82,13 +89,14 @@ func cmdSetup(r *input) error {
 	if err := configureCamouflage(r, &c, save); err != nil {
 		return err
 	}
-	// Ensure at least one client (yourself).
+	// Ensure at least one client (yourself), seeded with the new-user default
+	// domain filter chosen above.
 	if len(c.Clients) == 0 {
 		uuid, uErr := newUUID()
 		if uErr != nil {
 			return uErr
 		}
-		c.Clients = []config.Client{{UUID: uuid, Name: "me"}}
+		c.Clients = []config.Client{c.NewClient(uuid, "me")}
 		save()
 	}
 
@@ -121,6 +129,45 @@ func cmdSetup(r *input) error {
 	fmt.Println("\nyour connection link (share with: decenzed-node link):")
 	printLinks(c, modeDefault)
 	return nil
+}
+
+// configureDefaultDomainPolicy asks for the domain filter applied to NEW users
+// (the initial "me" client and future `link add`). It never changes existing
+// clients — those are tuned in `link edit`. Answering 'no' leaves new users
+// unfiltered. Domains are source tokens: geosite:/ext: .dat categories, custom
+// text lists under decenzed-data/domains (file:NAME), or bare domains — combined.
+func configureDefaultDomainPolicy(r *input, c *config.AppConfig, save func()) {
+	fmt.Println("\nDefault domain filter for NEW users (per-user; existing users are untouched).")
+	fmt.Println("  blacklist — block the listed domains, allow everything else")
+	fmt.Println("  whitelist — allow ONLY the listed domains, block everything else")
+	fmt.Println("  no        — new users start unfiltered")
+	fmt.Println("  Lists combine: geosite:category, geoip:code (e.g. geoip:ru),")
+	fmt.Println("  ext:file.dat:category, file:NAME (a custom text list at")
+	fmt.Println("  decenzed-data/domains/NAME.txt), or a bare domain.")
+
+	def := "no"
+	if c.DefaultDomainMode.Filtering() {
+		def = string(c.DefaultDomainMode)
+	}
+	mode := parseDomainMode(ask(r, "Default filter mode (blacklist/whitelist/no)", def))
+	if !mode.Filtering() {
+		c.DefaultDomainMode = config.DomainModeOff
+		c.DefaultDomains = nil
+		save()
+		return
+	}
+	c.DefaultDomainMode = mode
+	c.DefaultDomains = splitCSV(ask(r,
+		"  Default domains (comma-separated sources, e.g. geosite:category-ads-all,file:blocked)",
+		strings.Join(c.DefaultDomains, ",")))
+	if mode == config.DomainModeWhitelist && len(c.DefaultDomains) == 0 {
+		fmt.Println("  ! whitelist with no domains would block everything — new users will start unfiltered until you add sources")
+	}
+	save()
+	// If they used a geosite:/geoip: list, fetch its .dat now (only when missing);
+	// fetch + cache any url: list too.
+	ensureGeodataForSources(r, c.DefaultDomains)
+	ensureRemoteLists(c.DefaultDomains)
 }
 
 // askClearable asks q showing current as the [default]. Pressing Enter keeps

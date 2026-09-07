@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"decenzed/node_app/internal/config"
 	"decenzed/node_app/internal/site"
 )
 
-func cmdLink(args []string) error {
+func cmdLink(in *input, args []string) error {
 	path, _ := configPath()
 	c, err := config.Load(path)
 	if err != nil || !c.IsConfigured() {
@@ -34,14 +35,25 @@ func cmdLink(args []string) error {
 		if uErr != nil {
 			return uErr
 		}
-		c.Clients = append(c.Clients, config.Client{UUID: uuid, Name: name})
+		cl := c.NewClient(uuid, name) // seeds the new-user default domain filter
+		c.Clients = append(c.Clients, cl)
+		idx := len(c.Clients) - 1
+		// Configure the domain filter through the same REPL as `link edit`, with the
+		// setup defaults pre-filled as the client's current policy. 'q' here aborts
+		// the whole add (nothing is saved); 'done' commits it.
+		fmt.Println("configure the new client — the defaults from setup are pre-filled:")
+		editClientPolicyREPL(in, &c, idx)
 		if err := saveAndReload(path, c); err != nil {
 			return err
 		}
-		cl := config.Client{UUID: uuid, Name: name}
-		fmt.Println("added client — share the link(s) below:")
-		printClient(c, cl, linkHost(c), modeLinks)
+		fmt.Println("\nadded client — share the link(s) below:")
+		printClient(c, c.Clients[idx], linkHost(c), modeLinks)
 		return nil
+	case "edit":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: link edit <name|uuid>")
+		}
+		return cmdLinkEdit(in, path, &c, strings.Join(args[1:], " "))
 	case "remove":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: link remove <name|uuid>")
@@ -66,7 +78,168 @@ func cmdLink(args []string) error {
 		fmt.Printf("removed %d client(s); the service was reloaded.\n", removed)
 		return nil
 	default:
-		return fmt.Errorf("usage: link [-l|-s] | link add [name] | link remove <name|uuid>")
+		return fmt.Errorf("usage: link [-l|-s] | link add [name] | link edit <name|uuid> | link remove <name|uuid>")
+	}
+}
+
+// cmdLinkEdit configures an existing client's per-user policy via the shared
+// REPL, then saves + reloads. 'q' inside the REPL cancels without saving.
+func cmdLinkEdit(r *input, path string, c *config.AppConfig, key string) error {
+	idx := findClientIdx(c.Clients, key)
+	if idx < 0 {
+		return fmt.Errorf("no client matching %q", key)
+	}
+	editClientPolicyREPL(r, c, idx)
+	if err := saveAndReload(path, *c); err != nil {
+		return err
+	}
+	fmt.Println("saved; the service was reloaded.")
+	return nil
+}
+
+// editClientPolicyREPL runs a small REPL to configure client c.Clients[idx]'s
+// per-user policy in place. For now that is the domain filter: a mode
+// (blacklist/whitelist/off) and a list of SOURCES (geosite:/ext: .dat
+// categories, custom text files under decenzed-data/domains via file:NAME, or
+// bare domains — combined into one filter). It edits the struct in place and
+// returns when the operator commits ('done'/'save'/'exit'); it does NOT persist
+// — the caller saves. Typing 'q' unwinds out (errQuit) without saving, which the
+// callers rely on to cancel an edit or abort an in-progress `link add`.
+func editClientPolicyREPL(r *input, c *config.AppConfig, idx int) {
+	fmt.Printf("%s — commands: mode, domains, show, done (q cancels)\n", clientLabel(c.Clients[idx]))
+	if names := customListNames(); len(names) > 0 {
+		fmt.Printf("  available custom lists (file:NAME): %s\n", joinComma(names))
+	}
+	showClientPolicy(c.Clients[idx])
+	prompt := "\n  " + clientDisplayName(c.Clients[idx]) + "> "
+	for {
+		fmt.Print(prompt)
+		fields := strings.Fields(r.answer())
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "done", "save", "exit":
+			return
+		case "show":
+			showClientPolicy(c.Clients[idx])
+		case "mode":
+			arg := strings.Join(fields[1:], " ")
+			if arg == "" {
+				arg = ask(r, "  mode (blacklist/whitelist/off)", string(c.Clients[idx].DomainMode))
+			}
+			c.Clients[idx].DomainMode = parseDomainMode(arg)
+			if c.Clients[idx].DomainMode.Filtering() && len(c.Clients[idx].Domains) == 0 {
+				fmt.Println("  ! no domains yet — add some with: domains <src1,src2,...>")
+			}
+			showClientPolicy(c.Clients[idx])
+		case "domains":
+			arg := strings.Join(fields[1:], " ")
+			if arg == "" {
+				arg = ask(r, "  domains (comma-separated sources; 'no' clears)", strings.Join(c.Clients[idx].Domains, ","))
+			}
+			if isNo(arg) {
+				c.Clients[idx].Domains = nil
+			} else {
+				c.Clients[idx].Domains = splitCSV(arg)
+			}
+			if c.Clients[idx].DomainMode == config.DomainModeWhitelist && len(c.Clients[idx].Domains) == 0 {
+				fmt.Println("  ! whitelist with no domains would block everything — the filter stays off until you add sources")
+			}
+			// A geosite:/geoip: source needs its .dat — offer to fetch it if missing;
+			// a url: source is fetched + cached.
+			ensureGeodataForSources(r, c.Clients[idx].Domains)
+			ensureRemoteLists(c.Clients[idx].Domains)
+			showClientPolicy(c.Clients[idx])
+		default:
+			fmt.Println("  commands: mode <blacklist|whitelist|off>, domains <src1,src2,...>, show, done (q cancels)")
+		}
+	}
+}
+
+// findClientIdx returns the index of the client matching key (name or UUID), or
+// -1 if none matches.
+func findClientIdx(clients []config.Client, key string) int {
+	for i, cl := range clients {
+		if cl.UUID == key || cl.Name == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// clientLabel is a human label for a client: its quoted name plus a short UUID,
+// or just the short UUID when unnamed.
+func clientLabel(cl config.Client) string {
+	if cl.Name != "" {
+		return fmt.Sprintf("%q (%s)", cl.Name, shortUUID(cl.UUID))
+	}
+	return shortUUID(cl.UUID)
+}
+
+// clientKey is the shortest stable handle for `link edit`: the name if set, else
+// the full UUID.
+func clientKey(cl config.Client) string {
+	if cl.Name != "" {
+		return cl.Name
+	}
+	return cl.UUID
+}
+
+// shortUUID is the leading 8 chars of a UUID (or the whole thing if shorter).
+func shortUUID(uuid string) string {
+	if len(uuid) > 8 {
+		return uuid[:8]
+	}
+	return uuid
+}
+
+// showClientPolicy prints a client's current per-user filter.
+func showClientPolicy(cl config.Client) { fmt.Printf("    filter: %s\n", domainPolicyDesc(cl)) }
+
+// domainPolicyDesc renders a client's domain filter for display (used by
+// `link edit`). "off" when there is no effective filter.
+func domainPolicyDesc(cl config.Client) string {
+	if !cl.FiltersDomains() {
+		if cl.DomainMode.Filtering() {
+			return string(cl.DomainMode) + " (no sources — inactive)"
+		}
+		return "off (no domain filtering)"
+	}
+	return fmt.Sprintf("%s — %s", cl.DomainMode, joinComma(cl.Domains))
+}
+
+// customListNames lists the custom domain-list files available under the domains
+// dir (NAME.txt), for the `link edit` hint. Best-effort: "" dir or a read error
+// yields none.
+func customListNames() []string {
+	dir := domainsDir()
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".txt") {
+			names = append(names, strings.TrimSuffix(e.Name(), ".txt"))
+		}
+	}
+	return names
+}
+
+// parseDomainMode maps user input to a DomainMode. Anything not recognized as a
+// filtering mode (including "no"/"off"/empty) yields DomainModeOff.
+func parseDomainMode(s string) config.DomainMode {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "blacklist", "bl", "black", "block", "deny":
+		return config.DomainModeBlacklist
+	case "whitelist", "wl", "white", "allow":
+		return config.DomainModeWhitelist
+	default:
+		return config.DomainModeOff
 	}
 }
 

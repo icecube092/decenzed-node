@@ -24,10 +24,37 @@ type Input struct {
 
 	// Shared routing / policy (applies to every inbound).
 	BlockBittorrent bool
-	DomainAllow     []string // if non-empty: allow ONLY these, block the rest
-	DomainDeny      []string // always blocked
-	StatsEnabled    bool     // per-user stats for metering
-	Debug           bool     // verbose xray logging (loglevel "debug" vs "warning")
+	StatsEnabled    bool // per-user stats for metering
+	Debug           bool // verbose xray logging (loglevel "debug" vs "warning")
+
+	// BlockIPs is a global "ip -> block" rule applied to everyone (egress safety).
+	// The node fills it with the private/LAN CIDRs when private-IP blocking is on,
+	// as literal CIDRs so it needs no geoip.dat.
+	BlockIPs []string
+
+	// ResolveDomainIP switches domainStrategy to "IPIfNonMatch" and adds a minimal
+	// dns block, so IP (geoip) rules also apply to domain traffic (xray resolves
+	// the domain, then re-checks ip rules). Enable only when a COUNTRY geoip rule
+	// is in use — it costs a DNS lookup per otherwise-unmatched connection.
+	ResolveDomainIP bool
+
+	// UserDomains carries per-user filters. Each becomes routing rules scoped to
+	// that user (xray matches the inbound client email, which the node sets equal
+	// to the UUID), so xray itself enforces the filter. Domains/IPs are already
+	// resolved to xray matchers — see package domainlist.
+	UserDomains []UserDomainPolicy
+}
+
+// UserDomainPolicy is one user's filter. Mode is "blacklist" (block the listed
+// targets, allow the rest) or "whitelist" (allow ONLY the listed targets, block
+// the rest). Email scopes the rules to that user. Domains uses xray domain
+// syntax (geosite:, ext:, domain:, full:, keyword:, regexp:, or a bare domain);
+// IPs uses xray ip syntax (geoip:CODE, geoip:private, or a CIDR).
+type UserDomainPolicy struct {
+	Email   string
+	Mode    string
+	Domains []string
+	IPs     []string
 }
 
 // InboundSpec describes one listener to generate.
@@ -88,12 +115,13 @@ type TLSSpec struct {
 // ---- xray-core config schema (minimal subset) ----
 
 type Config struct {
-	Log       *logCfg     `json:"log,omitempty"`
-	Inbounds  []inbound   `json:"inbounds"`
-	Outbounds []outbound  `json:"outbounds"`
-	Routing   *routingCfg `json:"routing,omitempty"`
-	Policy    *policyCfg  `json:"policy,omitempty"`
-	Stats     *struct{}   `json:"stats,omitempty"`
+	Log       *logCfg         `json:"log,omitempty"`
+	DNS       json.RawMessage `json:"dns,omitempty"`
+	Inbounds  []inbound       `json:"inbounds"`
+	Outbounds []outbound      `json:"outbounds"`
+	Routing   *routingCfg     `json:"routing,omitempty"`
+	Policy    *policyCfg      `json:"policy,omitempty"`
+	Stats     *struct{}       `json:"stats,omitempty"`
 }
 
 type logCfg struct {
@@ -153,10 +181,14 @@ type routingCfg struct {
 }
 
 // rule mirrors xray's field-matcher rule. Only the fields we emit are present.
+// NOTE: within one rule the fields are AND'd (domain AND ip must both match), so
+// domain and ip matchers are emitted as SEPARATE rules to get OR semantics.
 type rule struct {
 	Type        string   `json:"type"`
+	User        []string `json:"user,omitempty"` // scope to these client emails (== UUIDs)
 	Protocol    []string `json:"protocol,omitempty"`
 	Domain      []string `json:"domain,omitempty"`
+	IP          []string `json:"ip,omitempty"`
 	Network     string   `json:"network,omitempty"`
 	OutboundTag string   `json:"outboundTag"`
 }
@@ -180,43 +212,55 @@ type policySystem struct {
 //
 // Routing rules are ORDER-SENSITIVE (xray evaluates top-to-bottom, first match
 // wins). We emit them in this order:
-//  1. deny domains        -> block
-//  2. bittorrent protocol -> block
-//  3. allow domains       -> direct         (only if an allow-list is set)
-//  4. default             -> block          (only if an allow-list is set;
-//     with an allow-list the policy is "allow only these", so everything not
-//     explicitly allowed must be blocked)
+//  1. bittorrent protocol -> block          (global, everyone; a hard rule)
+//  2. ip: BlockIPs        -> block          (global; the private/LAN CIDRs)
+//  3. per-user filters, one user at a time:
+//     - blacklist: block the user's listed domains/IPs (rest falls through to
+//     the default outbound -> allowed)
+//     - whitelist: route the user's listed domains/IPs to direct, then a
+//     trailing user-scoped block for everything else (so the user is fully
+//     resolved here and never leaks past their own filter)
 //
-// Without an allow-list the default is permissive (allow all except deny/bt).
+// A user with no filter, and traffic that matches no rule, hits xray's default
+// (first) outbound — "direct" — so unfiltered users are unaffected.
 func Generate(in Input) *Config {
 	loglevel := "warning"
 	if in.Debug {
 		loglevel = "debug"
 	}
+	// AsIs is cheapest and enough for domain rules + literal-IP geoip:private.
+	// IPIfNonMatch resolves the domain to an IP so COUNTRY geoip rules apply to
+	// domain traffic too; enable it (with a system-resolver dns block) only when
+	// asked, since it costs a DNS lookup per otherwise-unmatched connection.
+	strategy := "AsIs"
 	cfg := &Config{
 		Log: &logCfg{Loglevel: loglevel},
 		Outbounds: []outbound{
 			{Tag: "direct", Protocol: "freedom"},
 			{Tag: "block", Protocol: "blackhole"},
 		},
-		Routing: &routingCfg{DomainStrategy: "AsIs"},
 	}
+	if in.ResolveDomainIP {
+		strategy = "IPIfNonMatch"
+		// Resolve via the host's own DNS (no external resolver baked in -> no new
+		// leak/dependency); routing only needs the resolved IP for geoip matching.
+		cfg.DNS = json.RawMessage(`{"servers":["localhost"]}`)
+	}
+	cfg.Routing = &routingCfg{DomainStrategy: strategy}
 
 	for _, spec := range in.Inbounds {
 		cfg.Inbounds = append(cfg.Inbounds, buildInbound(spec))
 	}
 
 	var rules []rule
-	if len(in.DomainDeny) > 0 {
-		rules = append(rules, rule{Type: "field", Domain: in.DomainDeny, OutboundTag: "block"})
-	}
 	if in.BlockBittorrent {
 		rules = append(rules, rule{Type: "field", Protocol: []string{"bittorrent"}, OutboundTag: "block"})
 	}
-	if len(in.DomainAllow) > 0 {
-		rules = append(rules, rule{Type: "field", Domain: in.DomainAllow, OutboundTag: "direct"})
-		// allow-list mode => block everything not explicitly allowed
-		rules = append(rules, rule{Type: "field", Network: "tcp,udp", OutboundTag: "block"})
+	if len(in.BlockIPs) > 0 {
+		rules = append(rules, rule{Type: "field", IP: in.BlockIPs, OutboundTag: "block"})
+	}
+	for _, u := range in.UserDomains {
+		rules = append(rules, userDomainRules(u)...)
 	}
 	cfg.Routing.Rules = rules
 
@@ -228,6 +272,39 @@ func Generate(in Input) *Config {
 		}
 	}
 	return cfg
+}
+
+// userDomainRules renders one user's filter into ordered, user-scoped routing
+// rules. Domain and IP matchers become SEPARATE rules (OR semantics; a single
+// rule AND's its fields). An empty filter (no email, or no domains and no IPs)
+// yields no rules, so a mis-set empty whitelist can never silently black-hole a
+// user. The whitelist catch-all is scoped to the user, so it only ever blocks
+// that user's traffic.
+func userDomainRules(u UserDomainPolicy) []rule {
+	if u.Email == "" || (len(u.Domains) == 0 && len(u.IPs) == 0) {
+		return nil
+	}
+	user := []string{u.Email}
+	var out []rule
+	switch u.Mode {
+	case "blacklist":
+		if len(u.Domains) > 0 {
+			out = append(out, rule{Type: "field", User: user, Domain: u.Domains, OutboundTag: "block"})
+		}
+		if len(u.IPs) > 0 {
+			out = append(out, rule{Type: "field", User: user, IP: u.IPs, OutboundTag: "block"})
+		}
+	case "whitelist":
+		if len(u.Domains) > 0 {
+			out = append(out, rule{Type: "field", User: user, Domain: u.Domains, OutboundTag: "direct"})
+		}
+		if len(u.IPs) > 0 {
+			out = append(out, rule{Type: "field", User: user, IP: u.IPs, OutboundTag: "direct"})
+		}
+		// Everything else for this user is blocked (the whitelist boundary).
+		out = append(out, rule{Type: "field", User: user, Network: "tcp,udp", OutboundTag: "block"})
+	}
+	return out
 }
 
 // buildInbound renders one protocol listener. Sniffing is enabled on every
