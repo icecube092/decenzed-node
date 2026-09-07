@@ -44,6 +44,8 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags, so the changelog can diff against the previous tag
 
       - uses: actions/setup-go@v5
         with:
@@ -120,6 +122,27 @@ jobs:
           echo "----- manifest.json -----"
           cat dist/manifest.json
 
+      - name: Generate release notes (changelog since previous tag)
+        run: |
+          set -euo pipefail
+          # Nearest version tag before this one (empty on the very first release).
+          prev="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
+          {
+            if [ -n "$prev" ]; then
+              echo "### Changes since ${prev}"
+              range="${prev}..${TAG}"
+            else
+              echo "### Changes"
+              range="${TAG}"
+            fi
+            echo
+            # One bullet per non-merge commit: subject + short hash.
+            git log --no-merges --pretty=format:'- %s (%h)' "$range"
+            echo
+          } > dist/notes.md
+          echo "----- notes.md -----"
+          cat dist/notes.md
+
       - name: Publish release in ${{ env.DIST_REPO }}
         env:
           GH_TOKEN: ${{ secrets.DECENZED_NODE_GIT_TOKEN }}
@@ -128,5 +151,5 @@ jobs:
           gh release create "$TAG" \
             --repo "$DIST_REPO" \
             --title "$TAG" \
-            --notes "Automated release of decenzed-node $TAG" \
+            --notes-file dist/notes.md \
             dist/decenzed-node-* dist/manifest.json install-openwrt.sh
