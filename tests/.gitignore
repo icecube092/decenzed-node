@@ -1,0 +1,2 @@
+# The e2e suite downloads sing-box here at run time and removes it afterwards.
+bin/

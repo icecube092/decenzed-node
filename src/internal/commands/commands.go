@@ -31,19 +31,46 @@ func Main() int {
 		return 0
 	}
 
-	// Interactive CLI runs with admin/root by default (re-launches elevated if
-	// not already); skip with DECENZED_NO_ELEVATE=1.
-	maybeElevate()
-
-	// Point the (embedded) xray at the domains asset dir for this process, the
-	// same way the daemon does — set in-process each launch, no OS persistence.
-	setXrayAssetDir()
-
+	// Elevation policy (skip with DECENZED_NO_ELEVATE=1):
+	//   - Interactive shell (no args): elevate once up front so every command typed
+	//     in the session works, including service management.
+	//   - One-shot command: elevate ONLY when that command needs admin (service,
+	//     update, setup, or a config change that restarts the service). Read-only
+	//     commands (version, link listing, stats, config, check, logs) never
+	//     trigger a UAC/sudo prompt — a big papercut otherwise, and it lets the
+	//     e2e suite drive the binary without prompts.
 	in := newInput()
 	if len(os.Args) < 2 {
+		maybeElevate()
+		setXrayAssetDir()
 		return repl(in)
 	}
+	if needsAdmin(os.Args[1:]) {
+		maybeElevate()
+	}
+	setXrayAssetDir()
 	return runOneShot(in, os.Args[1:])
+}
+
+// needsAdmin reports whether a one-shot command needs admin/root — either it
+// manages the OS service directly, or it changes config and then restarts the
+// service to apply it. Read-only commands return false so they never prompt.
+func needsAdmin(args []string) bool {
+	switch args[0] {
+	case "service", "update", "setup", "debug":
+		return true
+	case "link":
+		// Only the mutating subcommands restart the service; listing does not.
+		if len(args) > 1 {
+			switch args[1] {
+			case "add", "remove", "edit":
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // runOneShot runs a single command (non-REPL). Typing 'q' or Ctrl+D at a prompt

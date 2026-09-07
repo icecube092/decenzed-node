@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/kardianos/service"
 
@@ -96,7 +97,16 @@ func cmdService(args []string) error {
 // restartService best-effort restarts the background service so a config change
 // takes effect immediately. Handles both procd (OpenWRT) and kardianos-managed
 // services. Returns an error only if a restart was attempted and failed.
+//
+// When DECENZED_NO_ELEVATE is set the caller has opted out of admin rights, so a
+// restart would only fail (or, on some Windows setups, prompt for elevation) —
+// skip it and tell the operator to restart manually. Keeps the e2e suite prompt-
+// and-noise-free.
 func restartService() error {
+	if os.Getenv("DECENZED_NO_ELEVATE") != "" {
+		fmt.Println("  (skipping service restart — DECENZED_NO_ELEVATE set; apply with: decenzed-node service restart)")
+		return nil
+	}
 	if procdAvailable() {
 		return procdCtl("restart")
 	}

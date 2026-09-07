@@ -201,10 +201,13 @@ isn't covered, open an issue with the output of `uname -m` and
   shell with `exit`/`quit`/`q` or **Ctrl+D**.
 - **One command** — `decenzed-node <command>`.
 - **Service** — once installed, it runs in the background on boot.
-- **Admin by default** — the interactive CLI re-launches itself elevated
-  (Windows: UAC prompt; Linux/macOS: `sudo`) so service commands just work. On
-  OpenWRT you're already root, so nothing changes. Skip it with
-  `DECENZED_NO_ELEVATE=1`.
+- **Admin only when needed** — elevation (Windows: UAC prompt; Linux/macOS:
+  `sudo`) happens **once** when you open the interactive shell, and for one-shot
+  commands **only when they need it** (`service`, `update`, `setup`, and the
+  config-changing `link add`/`remove`/`edit` and `debug`, which restart the
+  service). Read-only commands (`version`, `link`, `stats`, `config`, `check`,
+  `logs`) never prompt. On OpenWRT you're already root, so nothing changes. Skip
+  elevation entirely with `DECENZED_NO_ELEVATE=1`.
 
 ## 4. Setup
 ```bash
