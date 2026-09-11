@@ -130,6 +130,43 @@ func TestCertValid(t *testing.T) {
 	}
 }
 
+func TestValidateManualCert(t *testing.T) {
+	dir := t.TempDir()
+	domain := "vpn.example.com"
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+
+	// Nothing on disk yet.
+	if err := ValidateManualCert(dir, domain); err == nil {
+		t.Error("expected error when cert is missing")
+	}
+
+	// Cert present but key still missing.
+	writeTestCert(t, certPath, domain, 60*24*time.Hour)
+	if err := ValidateManualCert(dir, domain); err == nil {
+		t.Error("expected error when key is missing")
+	}
+
+	// Both present, valid for the domain — unlike CertValid, no env marker needed.
+	if err := os.WriteFile(keyPath, []byte("-----BEGIN EC PRIVATE KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateManualCert(dir, domain); err != nil {
+		t.Errorf("valid operator cert should pass: %v", err)
+	}
+
+	// Wrong domain is rejected.
+	if err := ValidateManualCert(dir, "other.example.com"); err == nil {
+		t.Error("cert for another domain should be rejected")
+	}
+
+	// Expired cert is rejected.
+	writeTestCert(t, certPath, domain, -time.Hour)
+	if err := ValidateManualCert(dir, domain); err == nil {
+		t.Error("expired cert should be rejected")
+	}
+}
+
 func TestEnsureCertValidatesParams(t *testing.T) {
 	if _, _, err := EnsureCert(context.Background(), Params{Dir: t.TempDir()}); err == nil {
 		t.Error("expected error for missing domain")

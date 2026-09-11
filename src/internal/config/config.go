@@ -204,12 +204,25 @@ const defaultSitePort = 8080
 func (c AppConfig) CamouflageTLS() bool { return c.Camouflage == CamouflageTLSMode }
 
 // TLSHost is the domain the node's certificate is issued for and clients connect
-// to in TLS mode: the explicit override, else the DuckDNS host.
+// to in TLS mode: the explicit override, else the DuckDNS host, else the
+// operator's own custom domain (bring-your-own-cert mode).
 func (c AppConfig) TLSHost() string {
 	if c.TLSDomain != "" {
 		return c.TLSDomain
 	}
-	return c.DuckDNSHost()
+	if h := c.DuckDNSHost(); h != "" {
+		return h
+	}
+	return c.CustomDomain
+}
+
+// TLSManualCert reports whether TLS camouflage must use an operator-supplied
+// certificate instead of an automatic Let's Encrypt one. This is the case when
+// the node is in TLS mode behind the operator's own domain (no DuckDNS token):
+// without DuckDNS it can't run the DNS-01 challenge, so the operator drops their
+// own cert.pem/key.pem into decenzed-data and renews them themselves.
+func (c AppConfig) TLSManualCert() bool {
+	return c.CamouflageTLS() && c.DuckDNSHost() == "" && c.CustomDomain != ""
 }
 
 // SiteAddr is the localhost address the built-in website listens on and that

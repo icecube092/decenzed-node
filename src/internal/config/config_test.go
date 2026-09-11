@@ -97,6 +97,38 @@ func TestTLSHostPrefersOverrideThenDuckDNS(t *testing.T) {
 	assert.Equal(t, "example.org", c.TLSHost(), "explicit override wins")
 }
 
+func TestTLSHostFallsBackToCustomDomain(t *testing.T) {
+	c := Default()
+	c.CustomDomain = "vpn.example.com"
+	// No DuckDNS, no override: the operator's own domain is the TLS host.
+	assert.Equal(t, "vpn.example.com", c.TLSHost())
+}
+
+func TestTLSManualCert(t *testing.T) {
+	// REALITY mode: never a manual cert.
+	c := Default()
+	c.CustomDomain = "vpn.example.com"
+	assert.False(t, c.TLSManualCert())
+
+	// TLS behind the operator's own domain (no DuckDNS): manual cert.
+	c.Camouflage = CamouflageTLSMode
+	assert.True(t, c.TLSManualCert())
+
+	// TLS with DuckDNS: automatic cert, not manual.
+	d := Default()
+	d.Camouflage = CamouflageTLSMode
+	d.DuckDNSToken = "tok"
+	d.DuckDNSSubdomain = "mynode"
+	assert.False(t, d.TLSManualCert())
+}
+
+func TestIsConfiguredTLSCustomDomain(t *testing.T) {
+	c := Default()
+	c.Camouflage = CamouflageTLSMode
+	c.CustomDomain = "vpn.example.com"
+	assert.True(t, c.IsConfigured(), "TLS mode is configured once a domain exists")
+}
+
 func TestSiteAddrDefaultAndOverride(t *testing.T) {
 	c := Default()
 	assert.Equal(t, "127.0.0.1:8080", c.SiteAddr())

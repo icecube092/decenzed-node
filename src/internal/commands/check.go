@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"decenzed/node_app/internal/acme"
 	"decenzed/node_app/internal/config"
 	"decenzed/node_app/internal/speedtest"
 )
@@ -46,6 +47,17 @@ func cmdCheck(r *input) error {
 				wantIP = setIP
 			}
 			verifyDuckDNSResolves(host, wantIP)
+		}
+		// Bring-your-own-cert TLS: the node never issues this cert, so confirm the
+		// operator's cert.pem/key.pem are present and valid for their domain.
+		if cfg.TLSManualCert() {
+			if dir, dErr := dataDir(); dErr != nil {
+				fmt.Printf("\ntls cert:          could not locate data dir: %v\n", dErr)
+			} else if cErr := acme.ValidateManualCert(dir, cfg.TLSHost()); cErr != nil {
+				fmt.Printf("\ntls cert:          ! %v\n", cErr)
+			} else {
+				fmt.Printf("\ntls cert:          ok — your certificate for %s is present and valid\n", cfg.TLSHost())
+			}
 		}
 	}
 

@@ -109,7 +109,11 @@ func cmdSetup(r *input) error {
 
 	fmt.Println("\nsaved:", path)
 	if c.CamouflageTLS() {
-		fmt.Printf("TLS site: %s  (Let's Encrypt%s)\n", c.TLSHost(), stagingSuffix())
+		if c.TLSManualCert() {
+			fmt.Printf("TLS site: %s  (bring-your-own certificate)\n", c.TLSHost())
+		} else {
+			fmt.Printf("TLS site: %s  (Let's Encrypt%s)\n", c.TLSHost(), stagingSuffix())
+		}
 	} else {
 		fmt.Printf("REALITY domain: %s  (short id %s)\n", firstOr(c.RealityServerName), first(c.RealityShortIDs))
 	}
@@ -491,17 +495,20 @@ func normalizeDuckDNSLabel(s string) string {
 // configureCamouflage asks which masquerade the VLESS/Trojan inbounds use and
 // sets up the chosen mode:
 //   - reality: scan for a live TLS1.3+h2 site to borrow, generate REALITY keys.
-//   - tls:     masquerade behind the node's own website; obtain a Let's Encrypt
-//     certificate via DNS-01 (DuckDNS). No domain scan is performed.
+//   - tls:     masquerade behind the node's own website. With DuckDNS the node
+//     obtains a Let's Encrypt certificate automatically via DNS-01; with the
+//     operator's own domain it uses a certificate the operator supplies. No
+//     domain scan is performed.
 //
-// TLS mode needs a DuckDNS domain (for both the certificate and the DNS-01
-// challenge); without one it falls back to REALITY.
+// TLS mode needs a domain — either a DuckDNS one (automatic cert) or the
+// operator's own (bring-your-own cert). With neither it falls back to REALITY.
 func configureCamouflage(r *input, c *config.AppConfig, save func()) error {
 	fmt.Println("\nCamouflage for VLESS/Trojan:")
 	fmt.Println("  reality — borrow a stranger's TLS site (no domain/cert needed)")
 	fmt.Println("  tls     — masquerade behind YOUR OWN website on your domain. The node")
-	fmt.Println("            raises the website itself (you don't create or host anything)")
-	fmt.Println("            and gets a Let's Encrypt certificate automatically.")
+	fmt.Println("            raises the website itself (you don't create or host anything).")
+	fmt.Println("            With DuckDNS it gets a Let's Encrypt certificate automatically;")
+	fmt.Println("            with your own domain you supply the certificate yourself.")
 
 	def := config.CamouflageReality
 	if c.CamouflageTLS() {
@@ -510,13 +517,21 @@ func configureCamouflage(r *input, c *config.AppConfig, save func()) error {
 	mode := strings.ToLower(strings.TrimSpace(ask(r, "Camouflage mode (reality/tls)", def)))
 
 	if mode == config.CamouflageTLSMode {
-		if c.DuckDNSHost() == "" {
-			fmt.Println("  ! TLS mode needs a DuckDNS domain (token + subdomain) for the")
-			fmt.Println("    certificate and DNS-01 challenge — none configured. Using REALITY.")
-		} else {
+		switch {
+		case c.DuckDNSHost() != "":
 			c.Camouflage = config.CamouflageTLSMode
 			save()
 			return configureTLS(r, c, save)
+		case c.CustomDomain != "":
+			// Bring-your-own domain: the node can't run the DNS-01 challenge
+			// without DuckDNS, so the operator provides the certificate.
+			c.Camouflage = config.CamouflageTLSMode
+			save()
+			configureTLSManual(r, c)
+			return nil
+		default:
+			fmt.Println("  ! TLS mode needs a domain — either DuckDNS (token + subdomain) or")
+			fmt.Println("    your own domain — but none is configured. Using REALITY.")
 		}
 	}
 
@@ -589,6 +604,27 @@ func configureTLS(r *input, c *config.AppConfig, save func()) error {
 	}
 	fmt.Printf("  ok — certificate stored in decenzed-data; the node renews it automatically.\n")
 	return nil
+}
+
+// configureTLSManual sets up TLS camouflage behind the operator's OWN domain,
+// where the node cannot obtain a certificate itself (no DuckDNS, so no DNS-01
+// challenge). It only warns: the operator must place a valid cert.pem/key.pem
+// for their domain in decenzed-data and keep them renewed. No ACME account,
+// consent, or request is involved.
+func configureTLSManual(r *input, c *config.AppConfig) {
+	certFile, keyFile := certPaths()
+	fmt.Printf("\n>>> Masquerading behind your own site at https://%s\n", c.TLSHost())
+	fmt.Println("\n  ! You chose TLS with your own domain, so the node CANNOT get or renew a")
+	fmt.Println("    certificate for you (that needs DuckDNS for the DNS-01 challenge).")
+	fmt.Println("    YOU must supply the certificate yourself:")
+	fmt.Printf("      - certificate (full chain, PEM):  %s\n", certFile)
+	fmt.Printf("      - private key (PEM):              %s\n", keyFile)
+	fmt.Printf("    The certificate must be valid for %s. Obtain one however you like\n", c.TLSHost())
+	fmt.Println("    (e.g. certbot, acme.sh, your registrar) and keep it renewed — the node")
+	fmt.Println("    will NOT renew it. It hot-reloads the files, so replacing them is enough.")
+	fmt.Println("    Until valid files are in place, the node won't start in TLS mode.")
+	// A pause so the warning isn't missed in the scroll; the answer is ignored.
+	ask(r, "\n  Press Enter to acknowledge", "")
 }
 
 // leEnv names the build-fixed Let's Encrypt environment for display.

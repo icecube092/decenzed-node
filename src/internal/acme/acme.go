@@ -55,6 +55,36 @@ func CertValid(dir, domain string) bool {
 	return !needsRenewal(filepath.Join(dir, "cert.pem"), domain, StagingBuild)
 }
 
+// ValidateManualCert checks an operator-supplied certificate/key pair stored in
+// dir (cert.pem / key.pem) for use in bring-your-own-cert TLS mode, where the
+// node does not issue the certificate itself. It verifies both files are present
+// and readable, the certificate covers domain, and it is not already expired. It
+// deliberately does NOT check the CA-environment marker or the 30-day renewal
+// window — those apply only to certificates this node obtained via ACME. A
+// descriptive error explains what the operator must fix.
+func ValidateManualCert(dir, domain string) error {
+	certPath := filepath.Join(dir, "cert.pem")
+	keyPath := filepath.Join(dir, "key.pem")
+	pemBytes, err := os.ReadFile(certPath)
+	if err != nil {
+		return fmt.Errorf("certificate %s not found — place your PEM certificate there", certPath)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		return fmt.Errorf("private key %s not found — place your PEM private key there", keyPath)
+	}
+	leaf, err := leafCert(pemBytes)
+	if err != nil {
+		return fmt.Errorf("certificate %s is not valid PEM: %w", certPath, err)
+	}
+	if leaf.VerifyHostname(domain) != nil {
+		return fmt.Errorf("certificate %s is not valid for %s", certPath, domain)
+	}
+	if time.Now().After(leaf.NotAfter) {
+		return fmt.Errorf("certificate %s expired on %s — renew it", certPath, leaf.NotAfter.Format(time.DateOnly))
+	}
+	return nil
+}
+
 // Params configures a single EnsureCert call.
 type Params struct {
 	Domain string // the node's own FQDN, e.g. "me.duckdns.org"

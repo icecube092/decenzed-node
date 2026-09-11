@@ -59,7 +59,13 @@ func runNode(ctx context.Context) error {
 	// TLS camouflage: obtain the certificate (blocking, so the files exist before
 	// xray starts) and serve the decoy website xray falls back to.
 	if c.CamouflageTLS() {
-		if err := provisionTLS(ctx, c); err != nil {
+		if c.TLSManualCert() {
+			// Bring-your-own domain: the operator supplies cert.pem/key.pem (no
+			// DuckDNS, so no DNS-01). Just check they're present and valid.
+			if err := checkManualCert(c); err != nil {
+				return fmt.Errorf("tls camouflage: %w", err)
+			}
+		} else if err := provisionTLS(ctx, c); err != nil {
 			return fmt.Errorf("tls camouflage: %w", err)
 		}
 		go func() {
@@ -245,12 +251,29 @@ func provisionTLS(ctx context.Context, c config.AppConfig) error {
 	return err
 }
 
+// checkManualCert validates the operator-supplied certificate used in
+// bring-your-own-cert TLS mode (custom domain, no DuckDNS). The node never
+// obtains or renews it, so all we can do at startup is fail loudly with a clear
+// message when the files are missing, wrong-domain, or expired.
+func checkManualCert(c config.AppConfig) error {
+	dir, err := dataDir()
+	if err != nil {
+		return err
+	}
+	if err := acme.ValidateManualCert(dir, c.TLSHost()); err != nil {
+		return fmt.Errorf("%w\n"+
+			"  TLS mode with your own domain needs a certificate you supply and renew", err)
+	}
+	return nil
+}
+
 // maybeRenewCert runs a certificate renewal check about once a day in TLS mode.
 // EnsureCert is idempotent and only reaches the CA when the cert is within 30
 // days of expiry; on success xray hot-reloads the new files (no restart). Runs
 // in the background so the actual renewal never stalls the stats tick.
 func maybeRenewCert(ctx context.Context, c config.AppConfig, last *time.Time, now time.Time) {
-	if !c.CamouflageTLS() || now.Sub(*last) < 12*time.Hour {
+	// Manual (bring-your-own) certs are the operator's to renew — never touch them.
+	if !c.CamouflageTLS() || c.TLSManualCert() || now.Sub(*last) < 12*time.Hour {
 		return
 	}
 	*last = now
