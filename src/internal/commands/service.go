@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/kardianos/service"
 
@@ -49,7 +51,7 @@ func runAsService() error {
 
 func cmdService(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: service install|uninstall|start|stop|status")
+		return fmt.Errorf("usage: service install|uninstall|enable|disable|start|stop|restart|status")
 	}
 	// OpenWRT/procd systems are managed by a native init script, not kardianos.
 	if procdAvailable() {
@@ -76,6 +78,18 @@ func cmdService(args []string) error {
 	case "uninstall":
 		_ = svc.Stop()
 		return svc.Uninstall()
+	case "enable":
+		if err := setBootStart(svc, true); err != nil {
+			return err
+		}
+		fmt.Println("enabled — the service will start on boot.")
+		return nil
+	case "disable":
+		if err := setBootStart(svc, false); err != nil {
+			return err
+		}
+		fmt.Println("disabled — the service won't start on boot (still runs until stopped).")
+		return nil
 	case "start":
 		return svc.Start()
 	case "stop":
@@ -92,6 +106,43 @@ func cmdService(args []string) error {
 	default:
 		return fmt.Errorf("service: unknown subcommand %q", args[0])
 	}
+}
+
+// setBootStart enables (on=true) or disables (on=false) starting the installed
+// service at boot, WITHOUT installing or removing it — the counterpart of
+// systemd/procd "enable"/"disable". kardianos exposes no portable enable/disable,
+// so we drive the underlying init system directly, keyed off svc.Platform().
+// OpenWRT/procd is handled separately (cmdServiceProcd) and never reaches here.
+func setBootStart(svc service.Service, on bool) error {
+	const name = "decenzed-node"
+	plat := svc.Platform()
+	switch {
+	case strings.Contains(plat, "systemd"):
+		return runCtl("systemctl", boolPick(on, "enable", "disable"), name)
+	case strings.Contains(plat, "windows"):
+		// `sc config <svc> start= auto|demand`: the space after "start=" is part of
+		// the syntax, so it is passed as its own argument.
+		return runCtl("sc", "config", name, "start=", boolPick(on, "auto", "demand"))
+	default:
+		return fmt.Errorf("service %s: not supported on %q — enable/disable boot start with your init system directly",
+			boolPick(on, "enable", "disable"), plat)
+	}
+}
+
+// runCtl runs an init-system control command, streaming its output.
+func runCtl(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// boolPick returns yes when b is true, else no — a tiny ternary for readability.
+func boolPick(b bool, yes, no string) string {
+	if b {
+		return yes
+	}
+	return no
 }
 
 // restartService best-effort restarts the background service so a config change

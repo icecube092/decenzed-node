@@ -130,6 +130,18 @@ func cmdServiceProcd(args []string) error {
 		}
 		fmt.Println("uninstalled.")
 		return nil
+	case "enable":
+		if err := procdCtl("enable"); err != nil {
+			return err
+		}
+		fmt.Println("enabled — the service will start on boot.")
+		return nil
+	case "disable":
+		if err := procdCtl("disable"); err != nil {
+			return err
+		}
+		fmt.Println("disabled — the service won't start on boot (still runs until stopped).")
+		return nil
 	case "start":
 		return procdCtl("start")
 	case "stop":

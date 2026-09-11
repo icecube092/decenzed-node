@@ -222,8 +222,9 @@ Commands:
   stats                     Protocols, per-client/per-inbound traffic, run status.
   debug                     Toggle verbose logging (all xray logs to the file).
   config node|xray          Show the app-config / generated xray JSON.
-  service install|uninstall|start|stop|restart|status
-                            Manage the background service.
+  service install|uninstall|enable|disable|start|stop|restart|status
+                            Manage the background service (enable/disable toggle
+                            boot-start without removing it).
   logs [app|xray] [-f]      Show the log; filter by source; -f to follow.
   update                    Check for a newer version; if found, ask to install
                             it, then restart the service and re-launch the CLI.
