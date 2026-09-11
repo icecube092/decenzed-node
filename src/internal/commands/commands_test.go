@@ -31,11 +31,11 @@ func TestAskProtocolPortKeepsSavedPort(t *testing.T) {
 func TestAskTLSFallback(t *testing.T) {
 	noop := func() {}
 
-	// Enter on a fresh config accepts the offered default (127.0.0.1:8081).
+	// Enter on a fresh config keeps the default: the built-in site (empty).
 	c := &config.AppConfig{}
 	askTLSFallback(newInputFrom(strings.NewReader("\n")), c, noop)
-	if c.TLSFallbackDest != defaultTLSFallbackDest {
-		t.Errorf("Enter = %q, want default %q", c.TLSFallbackDest, defaultTLSFallbackDest)
+	if c.TLSFallbackDest != "" {
+		t.Errorf("Enter = %q, want empty (built-in site)", c.TLSFallbackDest)
 	}
 
 	// A typed host:port overrides it.
@@ -45,7 +45,14 @@ func TestAskTLSFallback(t *testing.T) {
 		t.Errorf("typed value = %q, want 127.0.0.1:9000", c.TLSFallbackDest)
 	}
 
-	// 'no' clears it back to the built-in site (empty).
+	// Enter keeps a previously-saved override (offered as the default).
+	c = &config.AppConfig{TLSFallbackDest: "127.0.0.1:8081"}
+	askTLSFallback(newInputFrom(strings.NewReader("\n")), c, noop)
+	if c.TLSFallbackDest != "127.0.0.1:8081" {
+		t.Errorf("Enter with saved value = %q, want it kept", c.TLSFallbackDest)
+	}
+
+	// 'no' resets a saved override back to the built-in site (empty).
 	c = &config.AppConfig{TLSFallbackDest: "127.0.0.1:8081"}
 	askTLSFallback(newInputFrom(strings.NewReader("no\n")), c, noop)
 	if c.TLSFallbackDest != "" {

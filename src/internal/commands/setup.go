@@ -560,31 +560,34 @@ func configureCamouflage(r *input, c *config.AppConfig, save func()) error {
 	return nil
 }
 
-// defaultTLSFallbackDest is offered in setup as the masquerade target: the
-// plain-HTTP vhost operators commonly run to front a real site behind the node
-// (see the 443-sharing deploy). Enter accepts it; 'no' keeps the built-in site.
-const defaultTLSFallbackDest = "127.0.0.1:8081"
-
 // askTLSFallback asks where non-proxy TLS traffic (browsers, active probes) is
-// sent — the masquerade target xray falls back to. It offers 127.0.0.1:8081 by
-// default (a local reverse proxy fronting a real site); Enter keeps it, another
-// host:port changes it, and 'no' uses the node's built-in decoy website (stored
-// as an empty TLSFallbackDest). Persisted so a re-run of setup keeps the choice
-// instead of forcing re-entry.
+// sent — the masquerade target xray falls back to. The DEFAULT is the node's own
+// built-in decoy website (stored as an empty TLSFallbackDest): pressing Enter
+// keeps it, which is the right choice for a standalone node. An operator fronting
+// a real site (e.g. a local reverse proxy on 127.0.0.1:8081) enters its host:port
+// to override; 'no' resets to the built-in site. The choice persists across
+// re-runs, so a saved override is offered as the default next time.
 func askTLSFallback(r *input, c *config.AppConfig, save func()) {
 	fmt.Println("\nTLS fallback target — where non-proxy visitors (and probes) land.")
-	fmt.Println("  Default 127.0.0.1:8081 fronts your own site (e.g. a local reverse proxy);")
-	fmt.Println("  enter a different host:port to change it, or 'no' for the built-in decoy site.")
-	def := c.TLSFallbackDest
-	if def == "" {
-		def = defaultTLSFallbackDest
+	fmt.Println("  Default is the node's built-in decoy website. To front your own site")
+	fmt.Println("  instead (e.g. a reverse proxy on 127.0.0.1:8081), enter its host:port;")
+	fmt.Println("  'no' resets to the built-in site.")
+	shown := c.TLSFallbackDest
+	if shown == "" {
+		shown = "built-in site"
 	}
-	v := askClearable(r, "  Fallback target (host:port; 'no' = built-in site)", def)
-	if v != "" && !strings.Contains(v, ":") {
-		fmt.Printf("  ! expected host:port (e.g. %s) — using the built-in site\n", defaultTLSFallbackDest)
-		v = ""
+	v := strings.TrimSpace(ask(r, "  Fallback target (host:port, or 'no' = built-in site)", shown))
+	switch {
+	case v == "" || v == shown:
+		// Enter — keep the current setting unchanged (built-in stays built-in).
+	case isNo(v):
+		c.TLSFallbackDest = ""
+	case strings.Contains(v, ":"):
+		c.TLSFallbackDest = v
+	default:
+		fmt.Println("  ! expected host:port (e.g. 127.0.0.1:8081) — using the built-in site")
+		c.TLSFallbackDest = ""
 	}
-	c.TLSFallbackDest = v
 	save()
 }
 
