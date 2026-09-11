@@ -28,6 +28,38 @@ func TestAskProtocolPortKeepsSavedPort(t *testing.T) {
 	}
 }
 
+func TestAskTLSFallback(t *testing.T) {
+	noop := func() {}
+
+	// Enter on a fresh config accepts the offered default (127.0.0.1:8081).
+	c := &config.AppConfig{}
+	askTLSFallback(newInputFrom(strings.NewReader("\n")), c, noop)
+	if c.TLSFallbackDest != defaultTLSFallbackDest {
+		t.Errorf("Enter = %q, want default %q", c.TLSFallbackDest, defaultTLSFallbackDest)
+	}
+
+	// A typed host:port overrides it.
+	c = &config.AppConfig{}
+	askTLSFallback(newInputFrom(strings.NewReader("127.0.0.1:9000\n")), c, noop)
+	if c.TLSFallbackDest != "127.0.0.1:9000" {
+		t.Errorf("typed value = %q, want 127.0.0.1:9000", c.TLSFallbackDest)
+	}
+
+	// 'no' clears it back to the built-in site (empty).
+	c = &config.AppConfig{TLSFallbackDest: "127.0.0.1:8081"}
+	askTLSFallback(newInputFrom(strings.NewReader("no\n")), c, noop)
+	if c.TLSFallbackDest != "" {
+		t.Errorf("'no' = %q, want empty (built-in site)", c.TLSFallbackDest)
+	}
+
+	// A value without a port is rejected and falls back to the built-in site.
+	c = &config.AppConfig{}
+	askTLSFallback(newInputFrom(strings.NewReader("example.com\n")), c, noop)
+	if c.TLSFallbackDest != "" {
+		t.Errorf("no-port value = %q, want empty", c.TLSFallbackDest)
+	}
+}
+
 func TestCheckInbounds(t *testing.T) {
 	// Without a config: only the default VLESS port is reported (public == bind).
 	got := checkInbounds(config.AppConfig{}, false)

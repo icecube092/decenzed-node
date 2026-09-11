@@ -517,21 +517,20 @@ func configureCamouflage(r *input, c *config.AppConfig, save func()) error {
 	mode := strings.ToLower(strings.TrimSpace(ask(r, "Camouflage mode (reality/tls)", def)))
 
 	if mode == config.CamouflageTLSMode {
-		switch {
-		case c.DuckDNSHost() != "":
-			c.Camouflage = config.CamouflageTLSMode
-			save()
-			return configureTLS(r, c, save)
-		case c.CustomDomain != "":
-			// Bring-your-own domain: the node can't run the DNS-01 challenge
-			// without DuckDNS, so the operator provides the certificate.
-			c.Camouflage = config.CamouflageTLSMode
-			save()
-			configureTLSManual(r, c)
-			return nil
-		default:
+		if c.DuckDNSHost() == "" && c.CustomDomain == "" {
 			fmt.Println("  ! TLS mode needs a domain — either DuckDNS (token + subdomain) or")
 			fmt.Println("    your own domain — but none is configured. Using REALITY.")
+		} else {
+			c.Camouflage = config.CamouflageTLSMode
+			save()
+			askTLSFallback(r, c, save)
+			if c.DuckDNSHost() != "" {
+				return configureTLS(r, c, save)
+			}
+			// Bring-your-own domain: the node can't run the DNS-01 challenge
+			// without DuckDNS, so the operator provides the certificate.
+			configureTLSManual(r, c)
+			return nil
 		}
 	}
 
@@ -559,6 +558,34 @@ func configureCamouflage(r *input, c *config.AppConfig, save func()) error {
 	}
 	save()
 	return nil
+}
+
+// defaultTLSFallbackDest is offered in setup as the masquerade target: the
+// plain-HTTP vhost operators commonly run to front a real site behind the node
+// (see the 443-sharing deploy). Enter accepts it; 'no' keeps the built-in site.
+const defaultTLSFallbackDest = "127.0.0.1:8081"
+
+// askTLSFallback asks where non-proxy TLS traffic (browsers, active probes) is
+// sent — the masquerade target xray falls back to. It offers 127.0.0.1:8081 by
+// default (a local reverse proxy fronting a real site); Enter keeps it, another
+// host:port changes it, and 'no' uses the node's built-in decoy website (stored
+// as an empty TLSFallbackDest). Persisted so a re-run of setup keeps the choice
+// instead of forcing re-entry.
+func askTLSFallback(r *input, c *config.AppConfig, save func()) {
+	fmt.Println("\nTLS fallback target — where non-proxy visitors (and probes) land.")
+	fmt.Println("  Default 127.0.0.1:8081 fronts your own site (e.g. a local reverse proxy);")
+	fmt.Println("  enter a different host:port to change it, or 'no' for the built-in decoy site.")
+	def := c.TLSFallbackDest
+	if def == "" {
+		def = defaultTLSFallbackDest
+	}
+	v := askClearable(r, "  Fallback target (host:port; 'no' = built-in site)", def)
+	if v != "" && !strings.Contains(v, ":") {
+		fmt.Printf("  ! expected host:port (e.g. %s) — using the built-in site\n", defaultTLSFallbackDest)
+		v = ""
+	}
+	c.TLSFallbackDest = v
+	save()
 }
 
 // leAgreementURL is the Let's Encrypt Subscriber Agreement shown before we
