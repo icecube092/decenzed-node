@@ -136,6 +136,17 @@ func TestSiteAddrDefaultAndOverride(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:9000", c.SiteAddr())
 }
 
+func TestFallbackAddr(t *testing.T) {
+	c := Default()
+	// No override: fall back to the built-in site.
+	assert.Equal(t, c.SiteAddr(), c.FallbackAddr())
+
+	// Override wins and leaves the built-in site address untouched.
+	c.TLSFallbackDest = "127.0.0.1:8081"
+	assert.Equal(t, "127.0.0.1:8081", c.FallbackAddr())
+	assert.Equal(t, "127.0.0.1:8080", c.SiteAddr(), "built-in site still runs for /sub/")
+}
+
 func TestIsConfigured(t *testing.T) {
 	// REALITY mode needs a public key.
 	c := Default()

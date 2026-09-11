@@ -173,10 +173,19 @@ type AppConfig struct {
 	// the operator accepted the CA Subscriber Agreement during setup, so unattended
 	// renewals can proceed without prompting. The staging-vs-production CA is fixed
 	// at BUILD time (see internal/acme.StagingBuild), not stored here.
-	TLSDomain    string `json:"tls_domain,omitempty"`
-	ACMEEmail    string `json:"acme_email,omitempty"`
-	ACMEAgreeTOS bool   `json:"acme_agree_tos,omitempty"`
-	SitePort     int    `json:"site_port,omitempty"`
+	//
+	// TLSFallbackDest overrides where xray sends non-proxy TLS traffic (the
+	// masquerade target). Empty means the built-in decoy website (SiteAddr). Set it
+	// to a "host:port" (e.g. "127.0.0.1:8081") to front a real site — a local
+	// reverse proxy, another web server — instead of the built-in page, so the
+	// domain looks like a genuine service to a probe. The built-in site keeps
+	// running regardless (it still serves /sub/ subscription links), so the
+	// override target can proxy /sub/ back to it if wanted.
+	TLSDomain       string `json:"tls_domain,omitempty"`
+	ACMEEmail       string `json:"acme_email,omitempty"`
+	ACMEAgreeTOS    bool   `json:"acme_agree_tos,omitempty"`
+	SitePort        int    `json:"site_port,omitempty"`
+	TLSFallbackDest string `json:"tls_fallback_dest,omitempty"`
 
 	// Clients — your own + friends' credentials. Each maps to one share link.
 	Clients []Client `json:"clients"`
@@ -225,14 +234,24 @@ func (c AppConfig) TLSManualCert() bool {
 	return c.CamouflageTLS() && c.DuckDNSHost() == "" && c.CustomDomain != ""
 }
 
-// SiteAddr is the localhost address the built-in website listens on and that
-// xray falls back to in TLS mode.
+// SiteAddr is the localhost address the built-in website listens on (and where
+// /sub/ subscription links are served over HTTPS in TLS mode).
 func (c AppConfig) SiteAddr() string {
 	p := c.SitePort
 	if p == 0 {
 		p = defaultSitePort
 	}
 	return fmt.Sprintf("127.0.0.1:%d", p)
+}
+
+// FallbackAddr is the masquerade target xray falls back to in TLS mode for any
+// non-proxy / bad-credential traffic: the operator's TLSFallbackDest override
+// when set, otherwise the built-in decoy website (SiteAddr).
+func (c AppConfig) FallbackAddr() string {
+	if c.TLSFallbackDest != "" {
+		return c.TLSFallbackDest
+	}
+	return c.SiteAddr()
 }
 
 // IsConfigured reports whether setup has produced enough state to start the node

@@ -391,7 +391,7 @@ func inputFromConfig(c config.AppConfig) xraygen.Input {
 		ServerName:   c.TLSHost(),
 		CertFile:     certFile,
 		KeyFile:      keyFile,
-		FallbackDest: c.SiteAddr(),
+		FallbackDest: c.FallbackAddr(), // TLSFallbackDest override, else the built-in site
 	}
 	// setCamouflage applies the active mode to a VLESS/Trojan inbound spec.
 	setCamouflage := func(spec *xraygen.InboundSpec) {
